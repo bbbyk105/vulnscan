@@ -213,10 +213,20 @@ class VendoredCopyTests(Case):
         shutil.copytree(ROOT / "src", copy / "src", ignore=ignore)
         shutil.copytree(ROOT / "tests", copy / "tests", ignore=ignore)
         shutil.copy(ROOT / "README.md", copy / "README.md")
+        shutil.copy(ROOT / "README.ja.md", copy / "README.ja.md")
         self.write({"app.py": "x = 1\n"})
         self.init_git()
         proc = self.run_cli("scan", ".", "--fail-on", "high", pythonpath=copy / "src")
         self.assertEqual(proc.returncode, 0, proc.stdout)
+
+
+class OwnReadmeTests(Case):
+    def test_readmes_have_no_findings(self) -> None:
+        # README の例が vulnscan 自身に拾われていた（SEC-013 の説明の password = "…"、2026-10-22）
+        for name in ("README.md", "README.ja.md"):
+            shutil.copy(ROOT / name, self.root / name)
+        result = self.scan()
+        self.assertEqual([(f.rule_id, f.location.path, f.location.line) for f in result.findings], [])
 
 
 class DetectionGapTests(Case):
