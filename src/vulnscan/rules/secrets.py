@@ -10,8 +10,34 @@ from __future__ import annotations
 from ..models import Severity
 from .base import LineRule
 
-_CREDENTIAL_KEY = (
-    r"(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)"
+_CREDENTIAL_KEY = r"(?:password|passwd|pwd|secret(?:[_-]?key)?|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)"
+# 前に言葉が付いた名前（SMTP_PASSWORD・dbPassword・GOOGLE_CLIENT_SECRET）も見る。名前がキーの語で終わるものだけ
+# （passwordField・secretName のように、キーの語で始まるだけの名前は対象外）。引用符の中の名前は - も許す（'X-Api-Key'）
+_CREDENTIAL_NAME = r"[A-Za-z0-9_]*" + _CREDENTIAL_KEY
+_QUOTED_CREDENTIAL_NAME = r"[A-Za-z0-9_-]*" + _CREDENTIAL_KEY
+_Q = r"[\"'`]"  # 値の引用符
+
+# SEC-013 で秘密と見なさない値。当たった部分（名前と値）だけに当てる（同じ行のほかの当たりは見る。マスクは広いまま）
+_NOT_A_SECRET = (
+    # 値の中に、参照・プレースホルダ・公開前提の値の印がある
+    r"(?i:process\.env|os\.getenv|os\.environ|import\.meta\.env|\$\{|your[_-]|django-insecure-|pk_(?:live|test)_|AIza[0-9A-Za-z_-]{35})"
+    rf"|(?i:{_Q}(?:password|passwd|secret|test|example|sample|dummy|changeme|placeholder|none|null|true|false|todo|fixme|x{{6,}}|\*{{6,}}){_Q}$)"
+    rf"|{_Q}<[^\"'`]*>{_Q}$"  # <your-password>
+    rf"|{_Q}(?:__|\$[A-Za-z_])"  # 差し込み口（__API_KEY__）・シェルの変数（"$POSTGRES_PASSWORD"）
+    rf"|(?i:{_Q}(?:https?://|env\())"  # URL・設定ファイルの env()
+    # 次の 4 つは大文字と小文字を区別する（区別しないと Hq7m_W2xT_z9Lp のような本物まで外れる）
+    rf"|{_Q}(?:/[a-z0-9_.:-]*)+{_Q}$"  # 道。小文字だけ（/ で始まる base64 は大文字を含む）
+    rf"|{_Q}[a-z][a-z_]*(?:\.[a-z_]+)+{_Q}$"  # i18n のキー（auth.password.label）。数字を含む p4ssw0rd.2024 は外さない
+    rf"|{_Q}[A-Z]+(?:_[A-Z]+)+{_Q}$"  # 大文字の識別子（RISK_WEAK）。数字を含む ABCD_1234 は外さない
+    rf"|{_Q}[a-z]+(?:[-_][a-z]+)+{_Q}$"  # 小文字の単語だけ（local-test-key・current-password）
+    # 名前を表す値（newPassword・ResetPassword・auth/RESET_PASSWORD・@app/secret）
+    rf"|(?i:{_Q}[a-z_/@.-]*(?:password|passwd|pwd|secret|token|key)[a-z_/@.-]*{_Q}$)"
+    # 前に言葉が付いた名前に、英字だけの値（"showPassword": "Anzeigen" のような画面の文言）
+    rf"|(?i:^[\"':]?[A-Za-z0-9_-]+?{_CREDENTIAL_KEY}[\"']?\s*(?::=|=>|[:=])\s*{_Q}[a-z]+{_Q}$)"
+    rf"|(?i:{_Q}(?:required|nullable|sometimes|bail)[|\"'`])"  # Laravel の検証ルール（'required|min:8'）
+    rf"|{_Q}\$2[aby]\$\d\d\$"  # bcrypt のハッシュ
+    rf"|{_Q}[123]x0{{10,}}[A-Z]{{2}}{_Q}$"  # Cloudflare Turnstile の試験用の秘密（公開されている）
+    rf"|{_Q}(?:appl|goog|amzn)_"  # RevenueCat の公開 SDK キー（アプリに入れる前提）
 )
 
 RULES = [
@@ -170,17 +196,28 @@ RULES = [
         title="パスワード／APIキーらしき値がハードコードされています",
         severity=Severity.HIGH,
         category="secret",
-        # キーは JSON・dict のように引用符で囲んでもよい。値は空白を含まない ASCII だけ
-        # （画面の文言「パスワードを入力」「Password must be …」を拾わないため）
-        # （"new-password" : "current-password" のような三項演算子は、キーが引用符で始まらないので対象外）
-        pattern=r"(?i)(?:[\"']" + _CREDENTIAL_KEY + r"[\"']|\b" + _CREDENTIAL_KEY + r"\b)\s*[:=]\s*[\"']([!#-&(-~]{8,})[\"']",
+        # 値は空白を含まない ASCII だけ（画面の文言「パスワードを入力」「Password must be …」を拾わないため）。
+        # 名前の書き方は、"name": / 'name' => （JSON・dict・PHP・Ruby）、Ruby のシンボル :name =>、name = / name: / Go の name :=。
+        # => は引用符の名前とシンボルだけ（items.map(password => '…') の矢印関数を拾わないため）
+        pattern=r"(?i)(?:[\"']"
+        + _QUOTED_CREDENTIAL_NAME
+        + r"[\"']\s*(?::=|=>|[:=])|:"
+        + _CREDENTIAL_NAME
+        + r"\s*=>|\b"
+        + _CREDENTIAL_NAME
+        + r"\b\s*(?::=|[:=]))\s*"
+        + _Q
+        + r"([!#-&(-~]{8,})"
+        + _Q,
         message="認証情報らしき文字列が直接書かれています。",
         remediation="値は環境変数かシークレット管理に移し、コードには参照だけを残してください。",
         cwe="CWE-798",
+        # .env 形式のファイルは SEC-016 が見る（両方で出すと「高」を二重に数える）
+        exclude_globs=(".env", ".env.*", "*.env", ".dev.vars", ".dev.vars.*"),
         secret=True,
         secret_group=1,
         test_severity=Severity.LOW,
-        unless=r"(?i)(?:process\.env|os\.getenv|os\.environ|getenv\s*\(|import\.meta\.env|\$\{|<[^>]*>|your[_-]|django-insecure-|pk_(?:live|test)_|AIza[0-9A-Za-z_-]{35}|[:=]\s*[\"'](?:password|passwd|secret|test|example|sample|dummy|changeme|placeholder|none|null|true|false|todo|fixme)[\"']|[\"']x{6,}[\"']|[\"']\*{6,}[\"'])",
+        value_unless=_NOT_A_SECRET,
         tags=("credential",),
     ),
     LineRule(

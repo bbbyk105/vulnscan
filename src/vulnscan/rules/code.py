@@ -5,6 +5,11 @@ from __future__ import annotations
 from ..models import Severity
 from .base import LineRule
 
+# INJ-009 で sqlite3・better-sqlite3・Prisma の呼び方を見るときの、SQL の頭の動詞
+_SQL_START = r"(?:select|insert|update|delete|replace|with)\s"
+# 値をつなぐ所の手前: 開いた引用符の中か、比べる演算子の直後
+_SQL_VALUE_TAIL = r"(?:[=<>]|\blike)\s*"
+
 RULES = [
     # ---------------------------------------------------------------- injection
     LineRule(
@@ -109,7 +114,19 @@ RULES = [
         title="SQL をテンプレートリテラル・連結で組み立てています",
         severity=Severity.HIGH,
         category="injection",
-        pattern=r"(?i)\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*\$\{|[\"'][^\"']*[\"']\s*\+)",
+        pattern=(
+            r"(?i)\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*\$\{|[\"'][^\"']*[\"']\s*\+)"
+            # sqlite3・better-sqlite3・Prisma の呼び方。ルーターやキャッシュの get と分けるため、文字列が SQL の動詞で始まるものだけ。
+            # 値をつなぐ所だけを見る（SQL の引用符の中の ${}・= < > LIKE の直後の ${} や連結）。列の一覧・WHERE・IN (?, ?) の
+            # 組み立ては値をバインドするので対象外（Go の INJ-014 と同じ決まり）。
+            # 引用符は、閉じた組・${…}・\ のエスケープを読み飛ばして数え、開いたままのものだけを値の中と見る
+            r"|\b(?:all|get|run|each|exec|prepare|queryRawUnsafe|executeRawUnsafe)\s*\(\s*(?:"
+            r"`\s*" + _SQL_START + r"(?:[^`'\"$\\]|\\.|\$(?!\{)|'[^'`]*'|\"[^\"`]*\"|\$\{[^}`]*\})*?"
+            r"(?:'[^'`]*|\"[^\"`]*|" + _SQL_VALUE_TAIL + r")\$\{"
+            r"|\"\s*" + _SQL_START + r"(?:[^\"'\\]|\\.|'[^'\"]*')*(?:'[^'\"]*|" + _SQL_VALUE_TAIL + r")\"\s*\+"
+            r"|'\s*" + _SQL_START + r"(?:[^'\"\\]|\\.|\"[^\"']*\")*(?:\"[^\"']*|" + _SQL_VALUE_TAIL + r")'\s*\+"
+            r")"
+        ),
         languages=("javascript",),
         require_line=r"(?i)\b(?:select|insert|update|delete|from|where|values)\b",
         message="値を SQL に直接連結すると SQL インジェクションになります。",

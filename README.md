@@ -263,7 +263,9 @@ pre-commit なら:
 - 「動いているアプリへの攻撃」はしません。認可のロジック穴や設定の実態は、コードレビューや実際の動作確認で補ってください。
 - バイナリ、1.5MB を超えるファイル、lockfile の中身は走査しません（`--max-file-size` で変更可）。
 - `--deps` は、`package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`（Yarn 1）/ `requirements.txt` / `composer.lock` をそれぞれの監査ツールで、`pubspec.lock`・`go.mod`・`Cargo.lock`・`Gemfile.lock`・`poetry.lock`・`Pipfile.lock`・`uv.lock`・`bun.lock` などを `osv-scanner` で調べます（サブフォルダのものと、`.gitignore` で除外したものも。`--exclude` は効きます。テスト用のフォルダの lockfile の指摘は「低」にします）。`osv-scanner` が無いときは、ほかの監査ツールが無いときと同じく DEP-010（高）です。`bun.lockb` はどのツールでも見られないので「調べていない」（DEP-012、低）と出すだけです。`osv-scanner` の出力の形は公式の説明に合わせて作ってあり、実物ではまだ確かめていません。
-- SEC-013（ハードコードしたパスワード）は、空白を含まない ASCII の値だけを見ます（画面の文言を拾わないため）。
+- SEC-013（ハードコードしたパスワード）は、名前が `password`・`secret`・`secret_key`・`api_key`・`access_token` などで終わるもの（`SMTP_PASSWORD`・`dbPassword`・`'X-Api-Key'` を含む）に、引用符かバッククォートで囲んだ、空白を含まない ASCII の値が直接入っているものを見ます（画面の文言を拾わないため）。代入は `=`・`:`・Go の `:=`、`=>` は引用符の名前と Ruby のシンボルだけです。`.env` 形式のファイルは SEC-016 が見ます。
+  - 次の値は秘密と見なしません（同じ行のほかの値は見ます）: 参照（`process.env`・`${…}`・`"$VAR"`）、仮の値（`changeme`・`your-…`・`<…>`・`__…`・`xxxxxx`）、URL・`env()`・小文字だけの道、i18n のキー（`auth.password.label`）、英字と `_` だけの大文字の識別子、小文字の単語だけの値（`"local-test-key"`）、名前を表す値（`'newPassword'`・`'auth/RESET_PASSWORD'`）、名前の前に言葉が付いたものの英字だけの値（`"showPassword": "Anzeigen"`）、Laravel の検証ルール、bcrypt のハッシュ、公開前提の値（Turnstile の試験用の秘密、RevenueCat の公開キー）。そのため、小文字の単語だけの弱いパスワード（`"my-super-secret"`）は拾いません。
+- INJ-009（JS の SQL の組み立て）は、`query`・`execute`・`raw` と、sqlite3・better-sqlite3・Prisma の `all`・`get`・`run`・`each`・`exec`・`prepare`・`$queryRawUnsafe`・`$executeRawUnsafe` を見ます。後者は、値をつなぐ所（SQL の引用符の中の `${}`、`=`・`<`・`>`・`LIKE` の直後の `${}` や連結）だけです。列の一覧・`WHERE`・`IN (?, ?)` を組み立てて値をバインドする書き方は対象外です。
 - 直下の `.env` は `.gitignore` されていても、`NEXT_PUBLIC_` などの露出チェックのために読みます（内容は外部送信しません）。サブフォルダの `.env` は、git に入っているものと `.gitignore` で除外されていないものだけを見ます。
 - 検出結果は「レビューの入口」です。修正は必ずテストとセットで行ってください。
 

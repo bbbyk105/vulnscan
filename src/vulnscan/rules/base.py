@@ -190,6 +190,9 @@ class LineRule:
     path_globs: tuple = ()
     exclude_globs: tuple = ()
     unless: Optional[str] = None
+    # 当たった部分（match.group(0)）だけに当てる除外。行全体に当たる unless と違い、同じ行のほかの当たりは見る。
+    # pattern に入れないので、マスク（mask_in）は除外した値も伏せる
+    value_unless: Optional[str] = None
     require_file: Optional[str] = None
     require_line: Optional[str] = None
     secret: bool = False
@@ -202,6 +205,7 @@ class LineRule:
     def __post_init__(self) -> None:
         self._pattern = re.compile(self.pattern)
         self._unless = re.compile(self.unless) if self.unless else None
+        self._value_unless = re.compile(self.value_unless) if self.value_unless else None
         self._require_file = re.compile(self.require_file) if self.require_file else None
         self._require_line = re.compile(self.require_line) if self.require_line else None
 
@@ -250,13 +254,19 @@ class LineRule:
     def _iter_matches(self, sf: SourceFile):
         if self.multiline:
             for match in self._pattern.finditer(sf.text):
+                if self._excluded(match):
+                    continue
                 lineno = sf.text.count("\n", 0, match.start()) + 1
                 yield lineno, match.group(0), match
             return
         for lineno, line in enumerate(sf.lines, 1):
-            match = self._pattern.search(line)
+            # 1 行に 1 件。value_unless で外した当たりの先に、外さない当たりがあればそれを使う
+            match = next((m for m in self._pattern.finditer(line) if not self._excluded(m)), None)
             if match:
                 yield lineno, line, match
+
+    def _excluded(self, match) -> bool:
+        return bool(self._value_unless and self._value_unless.search(match.group(0)))
 
     def mask_in(self, text: str) -> str:
         """text の中でこのルールに当たる値を、すべてマスクに置き換える。"""
