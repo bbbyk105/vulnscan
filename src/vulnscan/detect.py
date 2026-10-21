@@ -150,7 +150,7 @@ def language_summary(names: Iterable[str]) -> list:
 
 
 def detect(root: Path) -> dict:
-    """スキャンせずに、言語とフレームワークだけを見分ける（`vulnscan detect` と、番号で選ぶ一覧）。"""
+    """スキャンせずに、言語とフレームワークだけを見分ける（`vulnscan detect` と、言語を選ぶ一覧）。"""
     root = root.resolve()
     if root.is_file():
         return {"root": str(root), "languages": language_summary([root.name]), "frameworks": []}
@@ -189,7 +189,7 @@ def parse_languages(spec: str) -> list:
 
 
 def choose_languages(detected: list, answer: str) -> Optional[list]:
-    """番号で選ぶ一覧への答え（"1,3"・"py"・空）を、言語のキーの一覧にする。空なら None（絞らない。--lang を付けないときと同じ）。"""
+    """番号を打つ形（termios の無い環境で使う）への答え（"1,3"・"py"・空）を、言語のキーの一覧にする。空なら None（絞らない。--lang を付けないときと同じ）。"""
     if not answer.strip():
         return None
     chosen = []

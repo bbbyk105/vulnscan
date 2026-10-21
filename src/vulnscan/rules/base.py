@@ -54,7 +54,7 @@ OTHER_LANGUAGE_EXTENSIONS = {
     "perl": {".pl", ".pm"},
 }
 
-# 画面と --lang の番号の一覧に出す名前
+# 画面と --lang の言語を選ぶ一覧に出す名前
 LANGUAGE_LABELS = {
     "javascript": "JavaScript/TypeScript",
     "python": "Python",
