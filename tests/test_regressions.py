@@ -223,7 +223,8 @@ class VendoredCopyTests(Case):
 class OwnReadmeTests(Case):
     def test_readmes_have_no_findings(self) -> None:
         # README の例が vulnscan 自身に拾われていた（SEC-013 の説明の password = "…"、2026-10-22）
-        for name in ("README.md", "README.ja.md"):
+        (self.root / "docs").mkdir()
+        for name in ("README.md", "README.ja.md", "docs/rules.md", "docs/rules.ja.md"):
             shutil.copy(ROOT / name, self.root / name)
         result = self.scan()
         self.assertEqual([(f.rule_id, f.location.path, f.location.line) for f in result.findings], [])
