@@ -8,9 +8,10 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .detect import choose_languages, detect, parse_languages
 from .engine import ScanOptions, scan
 from .models import CATEGORY_JA, SEVERITY_JA, ScanError, Severity
-from .report import render, write_output
+from .report import language_scope, render, write_output
 from .rules import all_rule_meta, describe
 from .rules.base import set_reveal_secrets
 
@@ -38,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", help="出力ファイル（未指定なら標準出力）")
     p.add_argument("--min-severity", choices=["info", "low", "medium", "high", "critical"], default="low")
     p.add_argument("--category", action="append", choices=sorted(CATEGORY_JA), help="カテゴリで絞り込む（複数可）")
+    p.add_argument(
+        "--lang",
+        nargs="?",
+        const="",
+        metavar="LANGS",
+        help="この言語のファイルだけを見る（例: --lang js,py。値を付けなければ、見つかった言語から番号で選ぶ）",
+    )
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB", help="除外するパス（複数可）")
     p.add_argument("--max-file-size", type=int, default=1500, metavar="KB", help="走査するファイルの上限サイズ")
     p.add_argument("--deps", action="store_true", help="依存パッケージの既知CVEも検査する（ネットワーク使用）")
@@ -59,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--json", action="store_true")
     r.add_argument("--category", choices=sorted(CATEGORY_JA))
 
+    d = sub.add_parser("detect", help="言語とフレームワークを見分ける（スキャンはしない）")
+    d.add_argument("path", nargs="?", default=".")
+    d.add_argument("--json", action="store_true")
+
     e = sub.add_parser("explain", help="ルールの詳細を表示する")
     e.add_argument("rule_id")
 
@@ -69,7 +81,44 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+NEEDS_LANG_VALUE = "--lang に言語を指定してください（例: --lang js,py）。番号で選ぶのは、端末で実行したときだけです。"
+
+
+def ask_languages(detected: list):
+    """スキャンと同じファイルの集まりで見つかった言語を番号つきで出し、選んでもらう。
+
+    一覧と問いは stderr に出す（stdout はレポート用）。返すのは選んだ言語のキーか、None（すべて）。
+    """
+    if not detected:
+        raise ScanError("言語のファイルが見つかりませんでした。")
+    print("見る言語を選んでください（番号か名前をカンマ区切りで。空のまま Enter ですべて）:", file=sys.stderr)
+    for i, item in enumerate(detected, 1):
+        print(f"  {i}) {item['label']}  {item['files']} ファイル  {language_scope(item)}", file=sys.stderr)
+    print("> ", end="", file=sys.stderr, flush=True)
+    return choose_languages(detected, sys.stdin.readline())
+
+
+def resolve_lang(args) -> tuple:
+    """(言語のキー, 番号で選ぶか) を返す。`scan --lang <フォルダ>` はフォルダを対象にして番号で選ぶ。"""
+    if args.lang is None:
+        return (), False
+    if not args.lang:
+        return (), True
+    try:
+        return tuple(parse_languages(args.lang)), False
+    except ScanError:
+        # --lang は値を省けるので、後ろに書いたフォルダを値として受け取ってしまう。言語の名前でなく、
+        # 存在するパスで、対象のパスを書いていないなら、それを対象にする
+        if args.path == "." and Path(args.lang).exists():
+            args.path = args.lang
+            return (), True
+        raise
+
+
 def cmd_scan(args) -> int:
+    languages, ask = resolve_lang(args)
+    if ask and not sys.stdin.isatty():
+        raise ScanError(NEEDS_LANG_VALUE)
     path = Path(args.path)
     options = ScanOptions(
         min_severity=Severity.coerce(args.min_severity),
@@ -82,6 +131,8 @@ def cmd_scan(args) -> int:
         deps=args.deps,
         changed_only=args.changed,
         base=args.base,
+        languages=languages,
+        pick_languages=ask_languages if ask else None,
         reveal_secrets=args.reveal_secrets,
     )
     set_reveal_secrets(args.reveal_secrets)
@@ -141,6 +192,24 @@ def cmd_baseline(args) -> int:
     return 0
 
 
+def cmd_detect(args) -> int:
+    info = detect(Path(args.path))
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return 0
+    print("言語:")
+    for item in info["languages"]:
+        print(f"  {item['label']}  {item['files']} ファイル  {language_scope(item)}")
+    if not info["languages"]:
+        print("  （見つかりませんでした）")
+    print("フレームワーク:")
+    for item in info["frameworks"]:
+        print(f"  {item['label']}（{item['evidence']}）")
+    if not info["frameworks"]:
+        print("  （見つかりませんでした）")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -150,6 +219,8 @@ def main(argv=None) -> int:
             return cmd_scan(args)
         if args.command == "rules":
             return cmd_rules(args)
+        if args.command == "detect":
+            return cmd_detect(args)
         if args.command == "explain":
             return cmd_explain(args)
         if args.command == "baseline":

@@ -1,4 +1,5 @@
 #!/bin/sh
 # pip install しなくても使えるラッパー。
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# cd -P: symlink をたどった先で .. を解く（スキルを symlink で入れたとき <スキル>/../../vulnscan で呼ばれるため）
+here=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd -P)
 PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m vulnscan "$@"

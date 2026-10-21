@@ -14,10 +14,10 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from ..models import Finding, Location, Severity
-from .base import redact
+from .base import TEST_PATH_RE, redact
 
 SEVERITY_MAP = {
     "critical": Severity.CRITICAL,
@@ -39,23 +39,35 @@ LOCKFILES = {
 
 TOOLS = {"npm": "npm", "pnpm": "pnpm", "yarn": "yarn", "pip": "pip-audit", "composer": "composer"}
 
-INSTALL_HINTS = {"pip-audit": "`python3 -m pip install pip-audit`"}
-
-# 監査ツールを呼ばない lockfile。見ていないことをレポートに出す
-UNSUPPORTED_LOCKFILES = {
-    "bun.lock": "bun",
-    "bun.lockb": "bun",
-    "poetry.lock": "Poetry",
-    "uv.lock": "uv",
-    "Pipfile.lock": "Pipenv",
-    "Cargo.lock": "Cargo",
-    "go.sum": "Go",
-    "Gemfile.lock": "Bundler",
+INSTALL_HINTS = {
+    "pip-audit": "`python3 -m pip install pip-audit`",
+    "osv-scanner": "`brew install osv-scanner` などで osv-scanner をインストール",
 }
+
+# OSV-Scanner（google/osv-scanner）で見る lockfile。lockfile を読むだけで、プロジェクトのコードは動かさない
+OSV_LOCKFILES = {
+    "pubspec.lock": "Dart",
+    "go.mod": "Go",
+    "Cargo.lock": "Rust",
+    "Gemfile.lock": "Ruby",
+    "gems.locked": "Ruby",
+    "poetry.lock": "Poetry",
+    "Pipfile.lock": "Pipenv",
+    "uv.lock": "uv",
+    "pdm.lock": "PDM",
+    "bun.lock": "bun",
+    "mix.lock": "Elixir",
+    "gradle.lockfile": "Gradle",
+}
+
+# どのツールでも見ない lockfile。見ていないことをレポートに出す
+UNSUPPORTED_LOCKFILES = {"bun.lockb": "bun（バイナリの形式）"}
+
+DEPENDENCY_FILES = frozenset({*LOCKFILES, *OSV_LOCKFILES, *UNSUPPORTED_LOCKFILES})
 
 
 def _run(cmd: list, cwd: Path, env: Optional[dict] = None) -> tuple:
-    """(stdout, うまくいかなかったときの説明) を返す。起動できなければ stdout は空。"""
+    """(stdout, うまくいかなかったときの説明, 終了コード) を返す。起動できなければ stdout は空で、終了コードは None。"""
     try:
         proc = subprocess.run(
             cmd,
@@ -66,13 +78,13 @@ def _run(cmd: list, cwd: Path, env: Optional[dict] = None) -> tuple:
             env={**os.environ, **env} if env else None,
         )
     except subprocess.TimeoutExpired:
-        return "", "240 秒で終わりませんでした"
+        return "", "240 秒で終わりませんでした", None
     except (OSError, subprocess.SubprocessError) as exc:
-        return "", str(exc)
+        return "", str(exc), None
     out = proc.stdout.decode("utf-8", "replace").strip()
     err = proc.stderr.decode("utf-8", "replace").strip()
     lines = [line.strip() for line in (err or out).splitlines() if line.strip()]
-    return out, (lines[-1][:200] if lines else f"終了コード {proc.returncode}")
+    return out, (lines[-1][:200] if lines else f"終了コード {proc.returncode}"), proc.returncode
 
 
 def _json(text: str):
@@ -125,18 +137,32 @@ def _failed(tool: str, path: str, detail: str) -> Finding:
 def _unsupported(path: str, ecosystem: str) -> Finding:
     return _finding(
         "DEP-012",
-        f"{path} は --deps の対象外です",
+        f"{path} は --deps で調べていません",
         Severity.LOW,
         f"{path}（{ecosystem}）の既知の脆弱性は、vulnscan では調べていません。",
-        "そのエコシステムの監査ツールを別に流してください（例: Cargo は cargo audit、Go は govulncheck、"
-        "Ruby は bundler-audit）。",
+        "テキストの形式の bun.lock に移すと、osv-scanner で調べられます。",
         path,
         f"{path} unsupported",
     )
 
 
-def _npm(root: Path, path: str) -> list:
-    out, err = _run(["npm", "audit", "--json"], root)
+def _cvss_severity(score) -> Severity:
+    """OSV-Scanner の groups[].max_severity（CVSS の点数の文字列）を重要度にする。無ければ中。"""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return Severity.MEDIUM
+    if value >= 9.0:
+        return Severity.CRITICAL
+    if value >= 7.0:
+        return Severity.HIGH
+    if value >= 4.0:
+        return Severity.MEDIUM
+    return Severity.LOW if value > 0 else Severity.MEDIUM
+
+
+def _npm(cwd: Path, path: str) -> list:
+    out, err, _ = _run(["npm", "audit", "--json"], cwd)
     data = _json(out)
     if not isinstance(data, dict) or not isinstance(data.get("vulnerabilities"), dict):
         # 失敗すると {"message": …, "error": …} が出る（npm 7 以降）
@@ -174,8 +200,8 @@ def _npm(root: Path, path: str) -> list:
     return results
 
 
-def _pnpm(root: Path, path: str) -> list:
-    out, err = _run(["pnpm", "audit", "--json"], root)
+def _pnpm(cwd: Path, path: str) -> list:
+    out, err, _ = _run(["pnpm", "audit", "--json"], cwd)
     data = _json(out)
     if not isinstance(data, dict) or not isinstance(data.get("advisories"), dict):
         # 失敗すると {"error": {"code": …, "message": …}} が出る
@@ -201,9 +227,9 @@ def _pnpm(root: Path, path: str) -> list:
     return results
 
 
-def _yarn(root: Path, path: str) -> list:
+def _yarn(cwd: Path, path: str) -> list:
     # YARN_IGNORE_PATH: リポジトリの .yarnrc の yarn-path（任意の JS）を実行しない
-    out, err = _run(["yarn", "audit", "--json"], root, env={"YARN_IGNORE_PATH": "1"})
+    out, err, _ = _run(["yarn", "audit", "--json"], cwd, env={"YARN_IGNORE_PATH": "1"})
     events = [e for e in map(_json, out.splitlines()) if isinstance(e, dict)]
     # 最後まで終わると auditSummary が出る。Yarn 2 以降には `yarn audit` が無く、これが出ない
     if not any(e.get("type") == "auditSummary" for e in events):
@@ -228,8 +254,8 @@ def _yarn(root: Path, path: str) -> list:
     return results
 
 
-def _pip(root: Path, path: str) -> list:
-    out, err = _run(["pip-audit", "-r", path, "-f", "json", "--progress-spinner", "off"], root)
+def _pip(cwd: Path, path: str) -> list:
+    out, err, _ = _run(["pip-audit", "-r", Path(path).name, "-f", "json", "--progress-spinner", "off"], cwd)
     data = _json(out)
     # 2.x は {"dependencies": [...], "fixes": [...]}、古い版は依存の配列
     deps = data.get("dependencies") if isinstance(data, dict) else data
@@ -259,11 +285,11 @@ def _pip(root: Path, path: str) -> list:
     return results
 
 
-def _composer(root: Path, path: str) -> list:
+def _composer(cwd: Path, path: str) -> list:
     # --locked: vendor/ が無くても composer.lock を見る（無いと "No packages - skipping audit." で何もしない）
     # --no-plugins: vendor/ にあるプラグイン（任意の PHP）を読み込まない
-    out, err = _run(
-        ["composer", "audit", "--locked", "--format=json", "--no-interaction", "--no-plugins"], root
+    out, err, _ = _run(
+        ["composer", "audit", "--locked", "--format=json", "--no-interaction", "--no-plugins"], cwd
     )
     data = _json(out)
     if not isinstance(data, dict) or "advisories" not in data:
@@ -292,21 +318,91 @@ def _composer(root: Path, path: str) -> list:
     return results
 
 
-def dependency_findings(root: Path, enabled: bool) -> list:
+def _osv(root: Path, paths: list) -> list:
+    """OSV-Scanner は、lockfile を -L で並べて 1 回で呼ぶ。結果の source.path で、どの lockfile のものかに戻す。"""
+    args = ["osv-scanner", "scan", "source"]
+    for rel in paths:
+        args += ["-L", rel]
+    # --no-call-analysis=go: go.mod でコンパイラを呼ぶ解析をしない（lockfile を読むだけにする）
+    args += ["--format=json", "--no-call-analysis=go"]
+    out, err, code = _run(args, root)
+    if code == 128:  # パッケージが 1 つも無い
+        return []
+    data = _json(out)
+    if code not in (0, 1) or not isinstance(data, dict) or not isinstance(data.get("results", []), list):
+        return [_failed("osv-scanner", rel, err) for rel in paths]
+
+    resolved_root = root.resolve()
+
+    def rel_of(source_path) -> str:
+        try:
+            return Path(source_path).resolve().relative_to(resolved_root).as_posix()
+        except (TypeError, ValueError, OSError):
+            return paths[0] if len(paths) == 1 else str(source_path)
+
+    results = []
+    for result in data.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        path = rel_of((result.get("source") or {}).get("path"))
+        for pkg in result.get("packages") or []:
+            if not isinstance(pkg, dict):
+                continue
+            info = pkg.get("package") or {}
+            name = info.get("name", "?")
+            version = info.get("version", "?")
+            ecosystem = info.get("ecosystem", "")
+            vulns = {v.get("id"): v for v in pkg.get("vulnerabilities") or [] if isinstance(v, dict)}
+            # groups は、別名（GHSA と CVE など）で同じ脆弱性をまとめたもの
+            groups = pkg.get("groups") or [{"ids": [vid]} for vid in vulns]
+            for group in groups:
+                ids = group.get("ids") or ["?"]
+                primary = ids[0]
+                names = list(dict.fromkeys([primary, *(a for a in group.get("aliases") or [] if a.startswith("CVE-"))]))
+                summary = (vulns.get(primary) or {}).get("summary", "")
+                results.append(
+                    _finding(
+                        "DEP-001",
+                        f"依存パッケージ {name} に既知の脆弱性",
+                        _cvss_severity(group.get("max_severity")),
+                        f"{name} {version}（{ecosystem}）: {', '.join(names)} {summary}".strip(),
+                        f"https://osv.dev/vulnerability/{primary} で修正版を確かめて、更新してください。",
+                        path,
+                        f"{name}@{version} {primary}",
+                    )
+                )
+    return results
+
+
+def dependency_findings(root: Path, enabled: bool, dependency_files: Iterable[str] = ()) -> list:
+    """dependency_files は root からの相対パス。npm などは lockfile のあるフォルダで、osv-scanner はまとめて 1 回で動かす。"""
     if not enabled:
         return []
 
     results = []
     runner = {"npm": _npm, "pnpm": _pnpm, "yarn": _yarn, "pip": _pip, "composer": _composer}
-    for name, kind in LOCKFILES.items():
-        if not (root / name).is_file():
-            continue
-        tool = TOOLS[kind]
-        if not shutil.which(tool):
-            results.append(_missing(tool, name))
-            continue
-        results.extend(runner[kind](root, name))
-    for name, ecosystem in UNSUPPORTED_LOCKFILES.items():
-        if (root / name).is_file():
-            results.append(_unsupported(name, ecosystem))
+    osv_paths = []
+    for rel in dependency_files:
+        name = rel.rsplit("/", 1)[-1]
+        if name in LOCKFILES:
+            tool = TOOLS[LOCKFILES[name]]
+            if not shutil.which(tool):
+                results.append(_missing(tool, rel))
+                continue
+            results.extend(runner[LOCKFILES[name]]((root / rel).parent, rel))
+        elif name in OSV_LOCKFILES:
+            osv_paths.append(rel)
+        elif name in UNSUPPORTED_LOCKFILES:
+            results.append(_unsupported(rel, UNSUPPORTED_LOCKFILES[name]))
+
+    if osv_paths:
+        if shutil.which("osv-scanner"):
+            results.extend(_osv(root, osv_paths))
+        else:
+            results.extend(_missing("osv-scanner", rel) for rel in osv_paths)
+
+    # テスト・フィクスチャの lockfile は配られないので、わざと古い版を入れていても CI を止めない
+    for finding in results:
+        if TEST_PATH_RE.search(finding.location.path) and finding.severity > Severity.LOW:
+            finding.severity = Severity.LOW
     return results

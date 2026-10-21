@@ -1,8 +1,8 @@
 #!/bin/bash
-# Projects 配下の各ディレクトリを順にスキャンし、Markdown レポートを保存する。
+# vulnscan を置いたフォルダと同じ階層にある各ディレクトリを順にスキャンし、Markdown レポートを保存する。
 #
-#   ./scripts/scan-all.sh                    # ~/Projects の直下を全部
-#   ./scripts/scan-all.sh ~/Projects/foo     # 指定したものだけ
+#   ./scripts/scan-all.sh                    # vulnscan と同じ階層のフォルダを全部
+#   ./scripts/scan-all.sh ../myapp ../api    # 指定したものだけ
 #
 set -euo pipefail
 

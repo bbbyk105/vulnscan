@@ -74,6 +74,13 @@ SKIPPED_FILENAMES = {
     "Cargo.lock",
     "go.sum",
     "Gemfile.lock",
+    "gems.locked",
+    "pubspec.lock",
+    "uv.lock",
+    "pdm.lock",
+    "bun.lock",
+    "mix.lock",
+    "gradle.lockfile",
 }
 
 SKIPPED_SUFFIXES = (".min.js", ".min.css", ".map")
@@ -85,6 +92,10 @@ class FileSet:
     tracked: set = field(default_factory=set)
     skipped_dirs: int = 0
     git: bool = False
+    # 依存の lockfile（root からの相対パス）。中身は走査しないが、--deps で監査する
+    dependency_files: list = field(default_factory=list)
+    # リポジトリ全体のファイル（root からの相対パス）。--changed / --base のときも全体（フレームワークの見分けに使う）
+    inventory: list = field(default_factory=list)
 
 
 def _run_git(root: Path, args: list) -> Optional[str]:
@@ -108,12 +119,16 @@ def _split_z(output: Optional[str]) -> list:
     return [p for p in output.split("\0") if p]
 
 
+def _in_excluded_dir(relpath: str) -> bool:
+    return any(
+        part in EXCLUDED_DIRS or part.startswith(("dist-", "build-", "out-")) for part in relpath.split("/")[:-1]
+    )
+
+
 def _is_excluded(relpath: str) -> bool:
-    parts = relpath.split("/")
-    for part in parts[:-1]:
-        if part in EXCLUDED_DIRS or part.startswith(("dist-", "build-", "out-")):
-            return True
-    name = parts[-1]
+    if _in_excluded_dir(relpath):
+        return True
+    name = relpath.rsplit("/", 1)[-1]
     if name in SKIPPED_FILENAMES:
         return True
     return name.endswith(SKIPPED_SUFFIXES)
@@ -150,6 +165,7 @@ def collect(
     changed_only: bool = False,
     base: Optional[str] = None,
     extra_excludes: Iterable[str] = (),
+    dependency_names: Iterable[str] = (),
 ) -> FileSet:
     root = root.resolve()
     if not root.exists():
@@ -165,31 +181,48 @@ def collect(
         raise ScanError("git リポジトリではないので --base は使えません。")
     excludes = list(extra_excludes)
     tool_prefix = _tool_prefix(root)
+    dependency_names = set(dependency_names)
+
+    def is_candidate(rel: str) -> bool:
+        return (
+            not (tool_prefix and rel.startswith(tool_prefix))
+            and not any(_glob_match(rel, pat) for pat in excludes)
+            and not (root / rel).is_symlink()
+            and (root / rel).is_file()
+        )
+
+    def is_dependency_file(rel: str) -> bool:
+        return rel.rsplit("/", 1)[-1] in dependency_names and not _in_excluded_dir(rel) and is_candidate(rel)
+
+    def scannable(names: Iterable[str]) -> list:
+        return [n for n in names if n and not _is_excluded(n) and is_candidate(n)]
 
     if is_git:
-        if changed_only or base:
-            names = _changed_names(root, base)
-        else:
-            names = _split_z(
-                _run_git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-            )
+        all_names = _split_z(_run_git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))
+        names = _changed_names(root, base) if changed_only or base else all_names
         tracked = set(_split_z(_run_git(root, ["ls-files", "-z", "--cached"])))
-        paths = []
-        for name in names:
-            if not name or _is_excluded(name):
-                continue
-            if tool_prefix and name.startswith(tool_prefix):
-                continue
-            if any(_glob_match(name, pat) for pat in excludes):
-                continue
-            candidate = root / name
-            if candidate.is_symlink():
-                continue
-            if candidate.is_file():
-                paths.append(candidate)
-        return FileSet(files=paths, tracked=tracked, git=True)
+        # 依存は、--changed / --base でも全部の lockfile を見る（新しく公開された脆弱性は lockfile を変えなくても出る）。
+        # .gitignore で除外した lockfile も、手元に入っている依存を表すので見る
+        ignored_lockfiles = (
+            _split_z(
+                _run_git(
+                    root,
+                    ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"]
+                    + [f":(glob)**/{name}" for name in sorted(dependency_names)],
+                )
+            )
+            if dependency_names
+            else []
+        )
+        dependency_files = sorted(rel for rel in {*all_names, *ignored_lockfiles} if is_dependency_file(rel))
+        paths = [root / name for name in scannable(names)]
+        inventory = scannable(all_names)
+        return FileSet(
+            files=paths, tracked=tracked, git=True, dependency_files=dependency_files, inventory=inventory
+        )
 
     paths = []
+    dependency_files = []
     skipped = 0
     for dirpath, dirnames, filenames in os.walk(root):
         kept = []
@@ -202,16 +235,19 @@ def collect(
         for name in filenames:
             full = Path(dirpath) / name
             rel = full.relative_to(root).as_posix()
-            if _is_excluded(rel):
-                continue
-            if tool_prefix and rel.startswith(tool_prefix):
-                continue
-            if any(_glob_match(rel, pat) for pat in excludes):
-                continue
-            if full.is_symlink() or not full.is_file():
+            if is_dependency_file(rel):
+                dependency_files.append(rel)
+            if _is_excluded(rel) or not is_candidate(rel):
                 continue
             paths.append(full)
-    return FileSet(files=paths, tracked=set(), skipped_dirs=skipped, git=False)
+    return FileSet(
+        files=paths,
+        tracked=set(),
+        skipped_dirs=skipped,
+        git=False,
+        dependency_files=sorted(dependency_files),
+        inventory=[p.relative_to(root).as_posix() for p in paths],
+    )
 
 
 def _glob_match(path: str, pattern: str) -> bool:
