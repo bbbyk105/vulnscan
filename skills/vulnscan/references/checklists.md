@@ -10,13 +10,15 @@
 - **入力の検証**: サーバー側で型・長さ・範囲を確かめているか（画面側のチェックだけでは足りない）。金額や数量に負の値を入れられないか
 - **SQL・コマンドの組み立て**: 外からの値を文字列でつないで、SQL やシェルのコマンドにしていないか（プレースホルダ・引数の配列で渡す）。
   vulnscan の JS のルールは、`query`・`execute`・`raw` と、sqlite3・better-sqlite3・Prisma の `all`・`get`・`run`・`each`・`exec`・`prepare`・
-  `$queryRawUnsafe`・`$executeRawUnsafe` にしか当たらず、どれも値をつなぐ所（SQL の引用符の中の `${}`、`=`・`<`・`>`・`LIKE` の直後）だけを見る。
-  次は拾わないので読む: 列名や並べ方に外の値を入れる組み立て（`SET ${field}=?`・`ORDER BY ${sort}`）、引用符も演算子も無い値の位置
-  （`LIMIT ${n}`・`IN (${ids.join(',')})`・`VALUES (${id}, ${n})`・`BETWEEN ${a} AND ${b}`）、呼び出しと SQL を別の行に分けた書き方（Prettier が分けたものを含む）
+  `$queryRawUnsafe`・`$executeRawUnsafe` にしか当たらず、どれも値をつなぐ所（SQL の `'…'` の中の `${}`、`=`・`<`・`>`・`LIKE`・`ILIKE` の直後）だけを見る。
+  次は拾わないので読む: 列名・テーブル名・並べ方に外の値を入れる組み立て（`SET ${field}=?`・`FROM "${table}"`・`ORDER BY ${sort}`）、
+  引用符も演算子も無い値の位置（`LIMIT ${n}`・`IN (${ids.join(',')})`・`VALUES (${id}, ${n})`・`BETWEEN ${a} AND ${b}`）、
+  連結の間の式に引用符があるときの、その先の文字列（`"a" + f(',') + " AND b = " + b`）、呼び出しと SQL を別の行に分けた書き方（Prettier が分けたものを含む）
 - **秘密の名前**: vulnscan の SEC-013 は、名前が `password`・`secret`・`secret_key`・`api_key`・`access_token` などで終わるもの
   （`SMTP_PASSWORD`・`dbPassword`・`GOOGLE_CLIENT_SECRET`・`'X-Api-Key'` を含む）に、引用符かバッククォートで囲んだ値が直接入っているものに当たる。
   当たらないのは、名前がほかの語で終わるもの（`API_TOKEN`・`SMTP_PASS`）、仮の値と見分けられないので外している値（小文字の単語だけの `"my-super-secret"`、
-  名前の前に言葉が付いたものの英字だけの値など。一覧は README の SEC-013）、複数行にまたがる値、`.env` 形式のファイル（SEC-016 が見る）。
+  名前の前に言葉が付いたものの英字だけの値 `DB_PASSWORD = "topsecret"` など。一覧は README の SEC-013）、複数行にまたがる値、
+  `.env` 形式のファイル（SEC-016 が見る）、翻訳のファイル（`lang/`・`locales/`・`i18n/` などの下）。
   そういうものに文字列が直接入っていないかを探す。次は値を出さずに場所だけを出す（出たら読んで、値は伏せて書く）:
   ```sh
   grep -rniE --exclude-dir=node_modules --exclude-dir=.git '(password|passwd|pwd|secret|token|api_?key|private_?key)[a-z0-9_-]*["'"'"']?[[:space:]]*(:=|=>|:|=)[[:space:]]*["'"'"'`][^"'"'"'`]{8,}' <対象> | cut -d: -f1-2

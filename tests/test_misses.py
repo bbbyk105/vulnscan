@@ -284,5 +284,142 @@ class SqlInTestsIsLow(Case):
         self.assertEqual(severities, {"src/order.test.ts": "LOW", "src/order.ts": "HIGH"})
 
 
+class SecondReviewOfInj009(Case):
+    # 2 回目の /code-review の指摘（2026-10-22）。main で拾えていたものの後退と、識別子の誤検知
+    def test_values_joined_after_the_first_literal_are_flagged(self) -> None:
+        self.write(
+            {
+                "src/db.js": 'connection.query("SELECT * FROM " + table + " WHERE id = " + id);\n'
+                'db.query("SELECT * FROM t " + where + " AND b = " + b);\n'
+            }
+        )
+        self.assertEqual(sorted(f.location.line for f in self.findings(self.scan(), "INJ-009")), [1, 2])
+
+    def test_values_after_or_inside_nested_templates_are_flagged(self) -> None:
+        self.write(
+            {
+                "src/db.js": "db.query(`SELECT ${fields.map(f => `t.${f}`).join(', ')} FROM t WHERE name = '${name}'`);\n"
+                "db.query(`SELECT * FROM t WHERE a = 1 ${cond ? `AND id = ${id}` : ''}`);\n"
+                "db.all(`SELECT * FROM t WHERE 1 ${q ? `AND name LIKE '%${q}%'` : ''}`);\n"
+            }
+        )
+        self.assertEqual(sorted(f.location.line for f in self.findings(self.scan(), "INJ-009")), [1, 2, 3])
+
+    def test_ilike_generics_and_escaped_quotes_are_flagged(self) -> None:
+        self.write(
+            {
+                "src/db.ts": "db.query(`SELECT * FROM users WHERE name ILIKE ${q}`);\n"
+                "prisma.$queryRawUnsafe<User[]>(`SELECT * FROM users WHERE id = ${id}`);\n"
+                "db.all<Row>(`SELECT * FROM t WHERE a = '${a}'`);\n"
+                "db.query<User>(`SELECT * FROM t WHERE id = ${id}`);\n"
+                "db.query('SELECT * FROM t WHERE name = \\'' + name + '\\'');\n"
+                'db.query("SELECT * FROM t WHERE a = \\"" + a + "\\"");\n'
+                "db.query(`SELECT * FROM t WHERE name = \\'${name}\\'`);\n"
+            }
+        )
+        self.assertEqual(
+            sorted(f.location.line for f in self.findings(self.scan(), "INJ-009")), [1, 2, 3, 4, 5, 6, 7]
+        )
+
+    def test_long_concat_chain_does_not_hang(self) -> None:
+        # 連結の式の部分と前の \s* が空白を取り合い、続く数だけ組み合わせが増えて止まらなくなっていた
+        import signal
+
+        line = 'db.query("SELECT a" + ' + 'x + "b" + ' * 2000 + "1);\n"
+        self.write({"src/db.js": line})
+
+        def timeout(*_args):
+            raise TimeoutError("INJ-009 が 5 秒で終わらない")
+
+        old = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(5)
+        try:
+            self.scan()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+
+    def test_quoted_identifiers_are_not_flagged(self) -> None:
+        self.write(
+            {
+                "src/db.js": 'db.query(`SELECT ${cols.map((c) => `"${c}"`).join(",")} FROM users WHERE id = $1`, [id]);\n'
+                'pool.query(`SELECT * FROM "${table}" WHERE id = $1`, [id]);\n'
+            }
+        )
+        self.assertEqual(self.findings(self.scan(), "INJ-009"), [])
+
+
+class SecondReviewOfSec013(Case):
+    def test_weak_fixed_passwords_are_flagged(self) -> None:
+        values = ["topsecret", "supersecretpassword", "mysecretpassword", "monkeyking", "MySecretP@ss"]
+        self.write({"src/a.py": "".join(f'password = "{v}"\n' for v in values)})
+        self.assertEqual(len(self.findings(self.scan(), "SEC-013")), len(values))
+
+    def test_values_that_only_start_like_a_reference_are_flagged(self) -> None:
+        self.write(
+            {
+                "src/a.py": 'password = "$uperS3cret!"\npassword = "__Zq8vT3kL"\n'
+                'api_key = "https://user:Zq8vT3kLm2@host"\n'
+            }
+        )
+        self.assertEqual(len(self.findings(self.scan(), "SEC-013")), 3)
+
+    def test_backtick_value_does_not_run_into_the_next_assignment(self) -> None:
+        self.write({"src/c.js": f"const c={{apiKey:`{FAKE_PW}`,password:`changeme`}};\n"})
+        self.assertEqual(len(self.findings(self.scan(), "SEC-013")), 1)
+
+    def test_other_laravel_rules_and_translations_are_not_flagged(self) -> None:
+        self.write(
+            {
+                "app/Http/Requests/Update.php": "'password' => 'confirmed|min:8',\n"
+                "'password' => 'string|min:8|confirmed',\n"
+                "'password' => 'required_with:password_confirmation',\n"
+                "'password' => 'confirmed',\n"
+                "'current_password' => 'current_password:web',\n",
+                "lang/de/validation.php": "'password' => 'Passwort',\n",
+            }
+        )
+        self.assertEqual(self.findings(self.scan(), "SEC-013"), [])
+
+    def test_tokens_other_rules_report_are_not_counted_twice(self) -> None:
+        from test_regressions import FAKE_GH, FAKE_STRIPE
+
+        openai = "sk-" + "proj-" + "A" * 40
+        self.write(
+            {
+                "src/keys.ts": f'const OPENAI_API_KEY = "{openai}";\n'
+                f'const STRIPE_SECRET_KEY = "{FAKE_STRIPE}";\n'
+                f'const GITHUB_ACCESS_TOKEN = "{FAKE_GH}";\n'
+            }
+        )
+        result = self.scan()
+        self.assertEqual(self.findings(result, "SEC-013"), [])
+        self.assertTrue(self.findings(result, "SEC-005"))
+        self.assertTrue(self.findings(result, "SEC-006"))
+        self.assertTrue(self.findings(result, "SEC-008"))
+
+    def test_env_lines_with_comments_hyphens_and_pwd_are_flagged_by_sec016(self) -> None:
+        self.write(
+            {
+                ".env": f'PASSWORD="{FAKE_PW}"  # x\n'
+                f'api-key="{FAKE_PW}"\n'
+                f'DB_PASSWORD="{FAKE_PW}" # prod\n'
+                f'# OLD_DB_PASSWORD="{FAKE_PW}"\n'
+                f'DB_PWD="{FAKE_PW}"\n'
+                "PWD=/Users/someone/project\n",
+                "a.ts": "1\n",
+            }
+        )
+        result = self.scan()
+        self.assertEqual(sorted(f.location.line for f in self.findings(result, "SEC-016")), [1, 2, 3, 4, 5])
+        self.assertEqual(self.findings(result, "SEC-013"), [])
+
+    def test_excluded_values_are_still_masked_in_other_findings(self) -> None:
+        # SEC-013 では出さない値も、ほかのルールの証拠では伏せる（その行の指紋は一度変わる。README に書いた）
+        self.write({"tls.js": 'new https.Agent({ rejectUnauthorized: false }); const FORGOT_PASSWORD = "/forgot-password";\n'})
+        out = all_output(self.scan())
+        self.assertNotIn("/forgot-password", out)
+
+
 if __name__ == "__main__":
     unittest.main()
