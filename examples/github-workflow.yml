@@ -1,0 +1,39 @@
+name: vulnscan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install vulnscan
+        run: python -m pip install -e ./vulnscan
+
+      - name: Scan
+        # PR では base との差分だけ、main への push では全体を見る（push では GITHUB_BASE_REF が空）
+        run: |
+          if [ -n "$GITHUB_BASE_REF" ]; then
+            vulnscan scan . --base "origin/$GITHUB_BASE_REF" --format sarif -o vulnscan.sarif --fail-on high
+          else
+            vulnscan scan . --format sarif -o vulnscan.sarif --fail-on high
+          fi
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: vulnscan.sarif

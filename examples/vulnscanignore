@@ -1,0 +1,14 @@
+# .vulnscanignore の例
+#
+# 書式: ルールID  パスglob  [expires=YYYY-MM-DD]  # 理由
+# ルールID は * で全部、SEC-* のようにワイルドカードも使えます。
+# パスはリポジトリルートからの相対パスです。
+
+# 期限付きの抑制（期限を過ぎると自動的に復活します）
+SEC-013  scripts/seed-demo.js  expires=2026-12-31  # デモ用の固定パスワード
+
+# 静的だと確認済みの箇所
+XSS-001  components/JsonLd.tsx  # JSON.stringify + escape 済み
+
+# 外部ベンダーのコードは対象外
+*  vendor/**
