@@ -34,7 +34,7 @@ To use it as the `vulnscan` command, run `python3 -m pip install -e .`.
 Example output (中 means medium):
 
 ```
-vulnscan 0.1.0 — /path/to/your-app
+vulnscan 0.2.0 — /path/to/your-app
 2026-10-21 19:18 · 84 ファイル · 86 ルール · 0.11 秒
 
 合計 2 件（中 2）
