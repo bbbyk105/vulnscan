@@ -9,6 +9,16 @@ from .base import LineRule
 _SQL_START = r"(?:select|insert|update|delete|replace|with)\s"
 # 値をつなぐ所の手前: 開いた引用符の中か、比べる演算子の直後
 _SQL_VALUE_TAIL = r"(?:[=<>]|\blike)\s*"
+# INJ-009 の、値をつなぐ所までの文字列の中身。引用符は、閉じた組・${…}・\ のエスケープを読み飛ばして数え、
+# 開いたままのものだけを値の中と見る（` の中の ${}、"…" + と '…' + の連結）
+_SQL_TEMPLATE_VALUE = (
+    r"(?:(?:[^`'\"$\\]|\\.|\$(?!\{)|'[^'`]*'|\"[^\"`]*\"|\$\{[^}`]*\})*?"
+    r"(?:'[^'`]*|\"[^\"`]*|" + _SQL_VALUE_TAIL + r")\$\{"
+    # 入れ子のテンプレートで値を引用符にくくる（values.map((v) => `'${v}'`)）
+    r"|[^`]*`[\"']\$\{)"
+)
+_SQL_DOUBLE_QUOTED_VALUE = r"(?:[^\"'\\]|\\.|'[^'\"]*')*(?:'[^'\"]*|" + _SQL_VALUE_TAIL + r")\"\s*\+"
+_SQL_SINGLE_QUOTED_VALUE = r"(?:[^'\"\\]|\\.|\"[^\"']*\")*(?:\"[^\"']*|" + _SQL_VALUE_TAIL + r")'\s*\+"
 
 RULES = [
     # ---------------------------------------------------------------- injection
@@ -114,18 +124,27 @@ RULES = [
         title="SQL をテンプレートリテラル・連結で組み立てています",
         severity=Severity.HIGH,
         category="injection",
+        # 値をつなぐ所だけを見る（SQL の引用符の中の ${}・= < > LIKE の直後の ${} や連結）。列の一覧・WHERE・IN (?, ?) の
+        # 組み立ては値をバインドするので対象外（Go の INJ-014 と同じ決まり）
         pattern=(
-            r"(?i)\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*\$\{|[\"'][^\"']*[\"']\s*\+)"
-            # sqlite3・better-sqlite3・Prisma の呼び方。ルーターやキャッシュの get と分けるため、文字列が SQL の動詞で始まるものだけ。
-            # 値をつなぐ所だけを見る（SQL の引用符の中の ${}・= < > LIKE の直後の ${} や連結）。列の一覧・WHERE・IN (?, ?) の
-            # 組み立ては値をバインドするので対象外（Go の INJ-014 と同じ決まり）。
-            # 引用符は、閉じた組・${…}・\ のエスケープを読み飛ばして数え、開いたままのものだけを値の中と見る
-            r"|\b(?:all|get|run|each|exec|prepare|queryRawUnsafe|executeRawUnsafe)\s*\(\s*(?:"
-            r"`\s*" + _SQL_START + r"(?:[^`'\"$\\]|\\.|\$(?!\{)|'[^'`]*'|\"[^\"`]*\"|\$\{[^}`]*\})*?"
-            r"(?:'[^'`]*|\"[^\"`]*|" + _SQL_VALUE_TAIL + r")\$\{"
-            r"|\"\s*" + _SQL_START + r"(?:[^\"'\\]|\\.|'[^'\"]*')*(?:'[^'\"]*|" + _SQL_VALUE_TAIL + r")\"\s*\+"
-            r"|'\s*" + _SQL_START + r"(?:[^'\"\\]|\\.|\"[^\"']*\")*(?:\"[^\"']*|" + _SQL_VALUE_TAIL + r")'\s*\+"
-            r")"
+            # query・execute・raw は SQL のための呼び方なので、文字列の頭は問わない（knex.raw の断片を含む）
+            r"(?i)\b(?:query|execute|raw)\s*\(\s*(?:`"
+            + _SQL_TEMPLATE_VALUE
+            + r"|\""
+            + _SQL_DOUBLE_QUOTED_VALUE
+            + r"|'"
+            + _SQL_SINGLE_QUOTED_VALUE
+            # sqlite3・better-sqlite3・Prisma の呼び方。ルーターやキャッシュの get と分けるため、文字列が SQL の動詞で始まるものだけ
+            + r")|\b(?:all|get|run|each|exec|prepare|queryRawUnsafe|executeRawUnsafe)\s*\(\s*(?:`\s*"
+            + _SQL_START
+            + _SQL_TEMPLATE_VALUE
+            + r"|\"\s*"
+            + _SQL_START
+            + _SQL_DOUBLE_QUOTED_VALUE
+            + r"|'\s*"
+            + _SQL_START
+            + _SQL_SINGLE_QUOTED_VALUE
+            + r")"
         ),
         languages=("javascript",),
         require_line=r"(?i)\b(?:select|insert|update|delete|from|where|values)\b",
@@ -133,6 +152,8 @@ RULES = [
         remediation="プレースホルダ（$1 / ?）とパラメータ配列を使ってください。",
         cwe="CWE-89",
         owasp="A03:2021",
+        # テストは固定の値を SQL につないで準備することが多く、外からの値は届かない
+        test_severity=Severity.LOW,
     ),
     LineRule(
         id="INJ-010",

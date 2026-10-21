@@ -242,5 +242,47 @@ class SqlCallsBeyondQuery(Case):
         self.assertEqual(self.findings(self.scan(), "INJ-009"), [])
 
 
+class QueryExecuteRawFollowTheSameRule(Case):
+    # PR #3 の残り: query・execute・raw は、どこに ${} があっても拾っていた（新しく足した呼び方より誤検知が多い）
+    def test_query_builders_through_query_execute_raw_are_not_flagged(self) -> None:
+        self.write(
+            {
+                "src/repo.js": "const r = await pool.query(`SELECT COUNT(*) FROM products ${where}`, params);\n"
+                "await db.query(`UPDATE events SET ${setClauses.join(', ')} WHERE id = $1`, values);\n"
+                "await client.query(`SELECT * FROM t WHERE id IN (${placeholders})`, ids);\n"
+                "await conn.execute('UPDATE products SET ' + fields.join(',') + ' WHERE id=?', params);\n"
+                "await knex.raw(`SELECT ${cols.join(',')} FROM users WHERE id = ?`, [id]);\n"
+            }
+        )
+        self.assertEqual(self.findings(self.scan(), "INJ-009"), [])
+
+    def test_joined_values_through_query_execute_raw_are_flagged(self) -> None:
+        self.write(
+            {
+                "src/repo.js": "db.query(`SELECT * FROM users WHERE id = ${id}`);\n"
+                "pool.query(\"SELECT * FROM users WHERE name = '\" + name + \"'\");\n"
+                "knex.raw(`DATE(created_at) = '${date}' AND deleted_at IS NULL FROM x`);\n"
+                "await conn.execute(`DELETE FROM t WHERE id = ${id}`);\n"
+                # 入れ子のテンプレートで値を引用符にくくる（~/Projects で main だけが拾っていた形）
+                'sql.raw(`${column} in (${values.map((v) => `\'${v}\'`).join(", ")})`);\n'
+            }
+        )
+        lines = sorted(f.location.line for f in self.findings(self.scan(), "INJ-009"))
+        self.assertEqual(lines, [1, 2, 3, 4, 5])
+
+
+class SqlInTestsIsLow(Case):
+    # PR #3 の残り: テストのファイルで定数をつないだ SQL が「高」で出ていた
+    def test_sql_in_test_files_is_low(self) -> None:
+        self.write(
+            {
+                "src/order.test.ts": "sqlite.exec(`update orders set status = 'shipped' where id = '${ORDER}'`);\n",
+                "src/order.ts": "sqlite.exec(`update orders set status = 'shipped' where id = '${id}'`);\n",
+            }
+        )
+        severities = {f.location.path: f.severity.name for f in self.findings(self.scan(), "INJ-009")}
+        self.assertEqual(severities, {"src/order.test.ts": "LOW", "src/order.ts": "HIGH"})
+
+
 if __name__ == "__main__":
     unittest.main()
