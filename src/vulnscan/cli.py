@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, picker
 from .detect import choose_languages, detect, parse_languages
 from .engine import ScanOptions, scan
 from .models import CATEGORY_JA, SEVERITY_JA, ScanError, Severity
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="",
         metavar="LANGS",
-        help="この言語のファイルだけを見る（例: --lang js,py。値を付けなければ、見つかった言語から番号で選ぶ）",
+        help="この言語のファイルだけを見る（例: --lang js,py。値を付けなければ、見つかった言語の一覧から矢印キーとスペースで選ぶ）",
     )
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB", help="除外するパス（複数可）")
     p.add_argument("--max-file-size", type=int, default=1500, metavar="KB", help="走査するファイルの上限サイズ")
@@ -81,25 +81,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-NEEDS_LANG_VALUE = "--lang に言語を指定してください（例: --lang js,py）。番号で選ぶのは、端末で実行したときだけです。"
+NEEDS_LANG_VALUE = "--lang に言語を指定してください（例: --lang js,py）。一覧から選ぶのは、端末で実行したときだけです。"
 
 
 def ask_languages(detected: list):
-    """スキャンと同じファイルの集まりで見つかった言語を番号つきで出し、選んでもらう。
+    """スキャンと同じファイルの集まりで見つかった言語を一覧にし、選んでもらう。
 
+    矢印キーとスペースで選ぶ（picker）。termios の無い環境（Windows など）では、番号か名前を打つ形にする。
     一覧と問いは stderr に出す（stdout はレポート用）。返すのは選んだ言語のキーか、None（すべて）。
     """
     if not detected:
         raise ScanError("言語のファイルが見つかりませんでした。")
+    labels = [f"{item['label']}  {item['files']} ファイル  {language_scope(item)}" for item in detected]
+    if picker.available(sys.stdin, sys.stderr):
+        chosen = picker.pick("見る言語を選んでください:", labels, sys.stdin, sys.stderr)
+        return [detected[i]["language"] for i in chosen] or None
     print("見る言語を選んでください（番号か名前をカンマ区切りで。空のまま Enter ですべて）:", file=sys.stderr)
-    for i, item in enumerate(detected, 1):
-        print(f"  {i}) {item['label']}  {item['files']} ファイル  {language_scope(item)}", file=sys.stderr)
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}) {label}", file=sys.stderr)
     print("> ", end="", file=sys.stderr, flush=True)
     return choose_languages(detected, sys.stdin.readline())
 
 
 def resolve_lang(args) -> tuple:
-    """(言語のキー, 番号で選ぶか) を返す。`scan --lang <フォルダ>` はフォルダを対象にして番号で選ぶ。"""
+    """(言語のキー, 一覧から選ぶか) を返す。`scan --lang <フォルダ>` はフォルダを対象にして一覧から選ぶ。"""
     if args.lang is None:
         return (), False
     if not args.lang:
@@ -117,7 +122,8 @@ def resolve_lang(args) -> tuple:
 
 def cmd_scan(args) -> int:
     languages, ask = resolve_lang(args)
-    if ask and not sys.stdin.isatty():
+    # 一覧と問いは stderr に出すので、stderr だけをファイルに向けたときも、見えない問いで待ち続けないよう止める
+    if ask and not (sys.stdin.isatty() and sys.stderr.isatty()):
         raise ScanError(NEEDS_LANG_VALUE)
     path = Path(args.path)
     options = ScanOptions(

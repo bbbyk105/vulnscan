@@ -33,7 +33,7 @@ class ScanOptions:
     deps: bool = False
     changed_only: bool = False
     languages: tuple = ()  # 空ならすべて。--lang で選んだ言語のキー
-    # 番号で選ぶ一覧（--lang だけのとき）。スキャンと同じファイルの集まりの言語を受け取り、選んだキー（None ならすべて）を返す
+    # 一覧から選ぶとき（--lang だけのとき）。スキャンと同じファイルの集まりの言語を受け取り、選んだキー（None ならすべて）を返す
     pick_languages: Optional[Callable[[list], Optional[list]]] = None
     base: Optional[str] = None
     reveal_secrets: bool = False

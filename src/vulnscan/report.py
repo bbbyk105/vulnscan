@@ -142,7 +142,7 @@ JSON_SCHEMA_VERSION = 1
 
 
 def language_scope(item: dict) -> str:
-    """言語ごとの対象範囲の言い方（レポート・detect・番号の一覧で同じものを使う）。"""
+    """言語ごとの対象範囲の言い方（レポート・detect・言語を選ぶ一覧で同じものを使う）。"""
     return f"{item['rules']} ルール" if item["rules"] else NO_LANGUAGE_RULES
 
 
