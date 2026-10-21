@@ -5,6 +5,39 @@ from __future__ import annotations
 from ..models import Severity
 from .base import LineRule
 
+# INJ-009 で sqlite3・better-sqlite3・Prisma の呼び方を見るときの、SQL の頭の動詞
+_SQL_START = r"(?:select|insert|update|delete|replace|with)\s"
+# 値をつなぐ所の手前の、比べる演算子
+_SQL_COMPARE = r"(?:[=<>]|\b(?:i?like|glob|regexp)\b)\s*"
+# INJ-009 の、値をつなぐ所。' の中（エスケープした \' を含む）と、比べる演算子の直後。
+# "…" は Postgres では識別子（"${table}"・列の一覧）なので、比べる演算子の直後のものだけを値と見る
+_SQL_TEMPLATE_TAIL = r"(?:'[^'`]*|\\'[^'`\\]*|" + _SQL_COMPARE + r"(?:\"[^\"`]*|\\\"[^\"`\\]*)?)\$\{"
+# ` の中を読み進める。閉じた引用符の組・${…}（中の入れ子のテンプレートを含む）・\ のエスケープを読み飛ばし、
+# 開いたままの引用符だけを値の中と見る
+_SQL_TEMPLATE_BODY = r"(?:[^`'\"$\\]|\\.|\$(?!\{)|'[^'`]*'|\"[^\"`]*\"|\$\{(?:[^{}`]|`[^`]*`)*\})*?"
+_SQL_TEMPLATE_VALUE = (
+    r"(?:" + _SQL_TEMPLATE_BODY + _SQL_TEMPLATE_TAIL
+    # 入れ子のテンプレートの中の値（${cond ? `AND id = ${id}` : ''}・values.map((v) => `'${v}'`)）
+    + r"|[^`]*`" + _SQL_TEMPLATE_BODY + _SQL_TEMPLATE_TAIL + r")"
+)
+# "…" + と '…' + の連結で、文字列が値をつなぐ所で終わるもの
+_SQL_DOUBLE_QUOTED_VALUE = (
+    r"(?:[^\"'\\]|\\.|'[^'\"]*')*?(?:'[^'\"]*|" + _SQL_COMPARE + r"(?:\\\"[^\"\\]*)?)\"\s*\+"
+)
+_SQL_SINGLE_QUOTED_VALUE = (
+    r"(?:[^'\"\\]|\\.|\"[^\"']*\")*?(?:\\'[^'\\]*|" + _SQL_COMPARE + r"(?:\"[^\"']*)?)'\s*\+"
+)
+_SQL_LITERAL = r"(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')"
+# 文字列 + 式 + 文字列 … の、どれかの文字列が値をつなぐ所で終わるもの（"SELECT * FROM " + t + " WHERE id = " + id）。
+# 間の式に引用符があると（fields.join(',')）その先は見ない。式は空白で始めない
+# （前の \s* と空白を取り合うと、続く数だけ組み合わせが増えて止まらなくなる）
+_SQL_CONCAT_VALUE = (
+    r"(?:" + _SQL_LITERAL + r"\s*\+\s*(?:[^\s\"'`;+][^\"'`;+]*\+\s*)?)*?"
+    r"(?:\"" + _SQL_DOUBLE_QUOTED_VALUE + r"|'" + _SQL_SINGLE_QUOTED_VALUE + r")"
+)
+# 呼び出しの名前と ( の間の、TypeScript の型引数（$queryRawUnsafe<User[]>(…)）
+_TS_TYPE_ARGS = r"\s*(?:<[^()]*?>)?\s*\("
+
 RULES = [
     # ---------------------------------------------------------------- injection
     LineRule(
@@ -109,13 +142,36 @@ RULES = [
         title="SQL をテンプレートリテラル・連結で組み立てています",
         severity=Severity.HIGH,
         category="injection",
-        pattern=r"(?i)\b(?:query|execute|raw)\s*\(\s*(?:`[^`]*\$\{|[\"'][^\"']*[\"']\s*\+)",
+        # 値をつなぐ所だけを見る（SQL の引用符の中の ${}・= < > LIKE の直後の ${} や連結）。列の一覧・WHERE・IN (?, ?) の
+        # 組み立ては値をバインドするので対象外（Go の INJ-014 と同じ決まり）
+        pattern=(
+            # query・execute・raw は SQL のための呼び方なので、文字列の頭は問わない（knex.raw の断片を含む）
+            r"(?i)\b(?:query|execute|raw)"
+            + _TS_TYPE_ARGS
+            + r"\s*(?:`"
+            + _SQL_TEMPLATE_VALUE
+            + r"|"
+            + _SQL_CONCAT_VALUE
+            # sqlite3・better-sqlite3・Prisma の呼び方。ルーターやキャッシュの get と分けるため、文字列が SQL の動詞で始まるものだけ
+            + r")|\b(?:all|get|run|each|exec|prepare|queryRawUnsafe|executeRawUnsafe)"
+            + _TS_TYPE_ARGS
+            + r"\s*(?:`\s*"
+            + _SQL_START
+            + _SQL_TEMPLATE_VALUE
+            + r"|(?=[\"']\s*"
+            + _SQL_START
+            + r")"
+            + _SQL_CONCAT_VALUE
+            + r")"
+        ),
         languages=("javascript",),
         require_line=r"(?i)\b(?:select|insert|update|delete|from|where|values)\b",
         message="値を SQL に直接連結すると SQL インジェクションになります。",
         remediation="プレースホルダ（$1 / ?）とパラメータ配列を使ってください。",
         cwe="CWE-89",
         owasp="A03:2021",
+        # テストは固定の値を SQL につないで準備することが多く、外からの値は届かない
+        test_severity=Severity.LOW,
     ),
     LineRule(
         id="INJ-010",

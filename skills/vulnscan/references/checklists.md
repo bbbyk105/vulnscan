@@ -9,12 +9,21 @@
 - **他人のデータ（IDOR）**: URL・フォーム・JSON で受け取った id を、ログイン中のユーザー（マルチテナントならテナント）のものか確かめてから読み書きしているか。一覧・検索・集計・CSV 出力にも絞り込みがあるか
 - **入力の検証**: サーバー側で型・長さ・範囲を確かめているか（画面側のチェックだけでは足りない）。金額や数量に負の値を入れられないか
 - **SQL・コマンドの組み立て**: 外からの値を文字列でつないで、SQL やシェルのコマンドにしていないか（プレースホルダ・引数の配列で渡す）。
-  vulnscan のルールは決まった関数名の呼び出しにしか当たらないので、ルールに無い呼び方（sqlite3 の `db.all` など）は拾えない
-- **秘密の名前**: vulnscan の SEC-013 は、名前がちょうど `password`・`secret`・`api_key`・`access_token` などのものにしか当たらない。
-  `SMTP_PASSWORD`・`JWT_SECRET`・`GOOGLE_CLIENT_SECRET`・`GITHUB_ACCESS_TOKEN`・`secretKey` のように前後に言葉が付いた名前は拾えないので、
-  そういう名前に文字列が直接入っていないかを探す。次は値を出さずに場所だけを出す（出たら読んで、値は伏せて書く）:
-  `grep -rniE --exclude-dir=node_modules --exclude-dir=.git '(password|passwd|pwd|secret|token|api_?key|private_?key)[a-z0-9_]*["'"'"']?[[:space:]]*(:=|=>|:|=)[[:space:]]*["'"'"'][^"'"'"']{8,}' <対象> | cut -d: -f1-2`
-  （Go の `:=`、Ruby・PHP の `=>` も拾う。`.claude/` など vulnscan が読まないフォルダも見る。
+  vulnscan の JS のルールは、`query`・`execute`・`raw` と、sqlite3・better-sqlite3・Prisma の `all`・`get`・`run`・`each`・`exec`・`prepare`・
+  `$queryRawUnsafe`・`$executeRawUnsafe` にしか当たらず、どれも値をつなぐ所（SQL の `'…'` の中の `${}`、`=`・`<`・`>`・`LIKE`・`ILIKE` の直後）だけを見る。
+  次は拾わないので読む: 列名・テーブル名・並べ方に外の値を入れる組み立て（`SET ${field}=?`・`FROM "${table}"`・`ORDER BY ${sort}`）、
+  引用符も演算子も無い値の位置（`LIMIT ${n}`・`IN (${ids.join(',')})`・`VALUES (${id}, ${n})`・`BETWEEN ${a} AND ${b}`）、
+  連結の間の式に引用符があるときの、その先の文字列（`"a" + f(',') + " AND b = " + b`）、呼び出しと SQL を別の行に分けた書き方（Prettier が分けたものを含む）
+- **秘密の名前**: vulnscan の SEC-013 は、名前が `password`・`secret`・`secret_key`・`api_key`・`access_token` などで終わるもの
+  （`SMTP_PASSWORD`・`dbPassword`・`GOOGLE_CLIENT_SECRET`・`'X-Api-Key'` を含む）に、引用符かバッククォートで囲んだ値が直接入っているものに当たる。
+  当たらないのは、名前がほかの語で終わるもの（`API_TOKEN`・`SMTP_PASS`）、仮の値と見分けられないので外している値（小文字の単語だけの `"my-super-secret"`、
+  名前の前に言葉が付いたものの英字だけの値 `DB_PASSWORD = "topsecret"` など。一覧は README の SEC-013）、複数行にまたがる値、
+  `.env` 形式のファイル（SEC-016 が見る）、翻訳のファイル（`lang/`・`locales/`・`i18n/` などの下）。
+  そういうものに文字列が直接入っていないかを探す。次は値を出さずに場所だけを出す（出たら読んで、値は伏せて書く）:
+  ```sh
+  grep -rniE --exclude-dir=node_modules --exclude-dir=.git '(password|passwd|pwd|secret|token|api_?key|private_?key)[a-z0-9_-]*["'"'"']?[[:space:]]*(:=|=>|:|=)[[:space:]]*["'"'"'`][^"'"'"'`]{8,}' <対象> | cut -d: -f1-2
+  ```
+  （Go の `:=`、Ruby・PHP の `=>`、バッククォートの値も拾う。`.claude/` など vulnscan が読まないフォルダも見る。
   `--base` のときは、変わったファイルに当たったものだけを数え、ほかは「範囲の外で気づいたもの」に書く）
 - **SSRF**: ユーザーが指定した URL をサーバーから取りに行っていないか（Webhook の送り先、画像の取り込み、OGP の取得）。行けるなら社内のアドレスやメタデータの IP を断っているか
 - **オープンリダイレクト**: ログイン後の戻り先などを、同じサイトの道に限っているか

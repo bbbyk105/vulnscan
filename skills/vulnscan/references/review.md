@@ -22,11 +22,11 @@ vulnscan の指摘は [triage.md](triage.md) で決める（この文書の「�
 ### vulnscan を流す
 
 PR は自分で `.vulnscanignore` に抑制を足せるので、`--base` のときは base の版の `.vulnscanignore` で流す（SKILL.md の 2 のコマンドの代わり。
-`--lang`・`--deps` を付けるなら、ここにも足す）:
+`--lang`・`--deps` を付けるなら、ここにも足す。`<出力>` は SKILL.md の 2 で作ったフォルダ）:
 
 ```sh
-git -C <対象> show "<base>:./.vulnscanignore" > "$TMPDIR/vulnscanignore.base" 2>/dev/null || : > "$TMPDIR/vulnscanignore.base"
-vulnscan scan <対象> --base <base> --ignore-file "$TMPDIR/vulnscanignore.base" --format json --fail-on never -o "$TMPDIR/vulnscan.json"
+git -C <対象> show "<base>:./.vulnscanignore" > "<出力>/ignore.base" 2>/dev/null || : > "<出力>/ignore.base"
+vulnscan scan <対象> --base <base> --ignore-file "<出力>/ignore.base" --format json --fail-on never -o "<出力>/scan.json"
 ```
 
 PR が足した抑制の行で消えるはずだった指摘も、SKILL.md の 3 でふつうに確かめる（誤検知なら、その行は正しい）。
@@ -56,19 +56,27 @@ git -C <対象> -c core.quotePath=false diff --relative --merge-base <base>     
 - 消したファイルは vulnscan が見ないので、分かれた所の版を取り出して vulnscan に通す（伏せた値とルールが分かる）。
   `[id]` や空白を含む名前でも崩れないよう 1 つずつ取り出す。`$d` と `$mb` は次の呼び出しに残らないので、1 回のシェルで流す:
   ```sh
-  d=$(mktemp -d "$TMPDIR/vulnscan-base.XXXXXX") && mb=$(git -C <対象> merge-base <base> HEAD) &&
+  d=$(mktemp -d "<出力>/deleted.XXXXXX") && mb=$(git -C <対象> merge-base <base> HEAD) &&
   git -C <対象> -c core.quotePath=false diff -z --name-only --relative --diff-filter=D "$mb" |
     while IFS= read -r -d '' p; do mkdir -p "$d/$(dirname "$p")" && git -C <対象> show "$mb:./$p" > "$d/$p"; done &&
-  vulnscan scan "$d" --format json --fail-on never -o "$TMPDIR/vulnscan-base.json"
+  vulnscan scan "$d" --format json --fail-on never -o "$d.json" && echo "$d.json"
   ```
-  取り出したものは平文なので、`$TMPDIR` の外へ写さない。
+  結果は最後に出たパスの JSON（流すたびに別のフォルダとファイルになる）。取り出したものは平文なので、`<出力>` の外へ写さない。
+  `.claude/`・`.codex/`・`.cursor/`・`node_modules/` などの下を消したときは、そこは vulnscan が読まないので
+  `vulnscan scan "<取り出したフォルダ>/.claude"` のように直接渡す（取り出したフォルダは、最後に出たパスから `.json` を除いたもの）。
   vulnscan が拾わない名前の秘密もあるので（[checklists.md](checklists.md) の共通の「秘密の名前」）、消えた行は目でも見る
 - ブランチの途中のコミットで入れて、あとのコミットで消した秘密は、上の差分にも vulnscan にも出ない。値を出さずに、どのコミットのどのファイルかだけを見る
   （`<正規表現>` は checklists.md の「秘密の名前」の grep と同じもの）:
   ```sh
-  git -C <対象> log -i --format='%h %s' --name-only -G '<正規表現>' <base>..HEAD
+  git -C <対象> -c core.quotePath=false log -i --format='%h %s' --name-only -G '<正規表現>' <base>..HEAD
   ```
-  出たファイルは `git -C <対象> show <コミット>:<path>`（`<path>` はリポジトリの根からのパス）を `$TMPDIR` の中に書き出し、vulnscan に通す。
+  出たファイルは 1 つずつ、そのコミットの版をフォルダの直下に書き出して vulnscan に通す（`<path>` は上の出力のまま、リポジトリの根からのパス。
+  直下に置くので、`.claude/` などの下のファイルも vulnscan が読む）:
+  ```sh
+  d=$(mktemp -d "<出力>/commit.XXXXXX") &&
+  git -C <対象> show '<コミット>:<path>' > "$d/$(basename '<path>')" &&
+  vulnscan scan "$d" --format json --fail-on never -o "$d.json" && echo "$d.json"
+  ```
   途中のコミットにあった秘密は、今のファイルに無くても本物（PR のコミットに残り、公開のリポジトリなら誰でも読める）。失効と再発行が要る
 
 ## 2. 読む
