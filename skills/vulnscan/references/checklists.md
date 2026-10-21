@@ -17,7 +17,7 @@
 - **秘密の名前**: vulnscan の SEC-013 は、名前が `password`・`secret`・`secret_key`・`api_key`・`access_token` などで終わるもの
   （`SMTP_PASSWORD`・`dbPassword`・`GOOGLE_CLIENT_SECRET`・`'X-Api-Key'` を含む）に、引用符かバッククォートで囲んだ値が直接入っているものに当たる。
   当たらないのは、名前がほかの語で終わるもの（`API_TOKEN`・`SMTP_PASS`）、仮の値と見分けられないので外している値（小文字の単語だけの `"my-super-secret"`、
-  名前の前に言葉が付いたものの英字だけの値 `DB_PASSWORD = "topsecret"` など。一覧は README の SEC-013）、複数行にまたがる値、
+  名前の前に言葉が付いたものの英字だけの値 `DB_PASSWORD = "topsecret"` など。一覧は README.ja.md の SEC-013）、複数行にまたがる値、
   `.env` 形式のファイル（SEC-016 が見る）、翻訳のファイル（`lang/`・`locales/`・`i18n/` などの下）。
   そういうものに文字列が直接入っていないかを探す。次は値を出さずに場所だけを出す（出たら読んで、値は伏せて書く）:
   ```sh

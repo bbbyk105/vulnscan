@@ -1,32 +1,36 @@
+**English** | [日本語](README.ja.md)
+
 # vulnscan
 
-自分のコードの弱点を、自分で見つけるための静的解析CLIです。
+A static analysis CLI for finding the weak spots in your own code.
 
-- **読み取り専用** — 対象ファイルを変更しません
-- **ローカル完結** — 既定ではネットワークに接続しません
-- **依存ゼロ** — Python 3.9+ の標準ライブラリだけで動きます
-- **日本語レポート** — 何が危ないのか、どう直すのかまで出力します
+- **Read-only** — never changes the files it scans
+- **Local** — no network access by default
+- **No dependencies** — runs on the Python 3.9+ standard library
+- **Tells you how to fix it** — each finding says what is risky and how to fix it
 
-> このツールは、自分が管理しているリポジトリを調べるためのものです。
-> 外部ホストへの攻撃、ポートスキャン、認証情報の窃取、マルウェア生成は行いません。
+> **Reports are in Japanese.** The scan output, the rule messages and the agent skill (`skills/`) are written in Japanese; only this README is translated. Rule IDs, paths, CWE and OWASP references are language-neutral, and `--format json` / `--format sarif` are easy to process in any language.
+
+> This tool is for checking repositories you maintain.
+> It does not attack external hosts, scan ports, steal credentials or generate malware.
 
 ---
 
-## クイックスタート
+## Quick start
 
 ```sh
 git clone https://github.com/bbbyk105/vulnscan.git
 cd vulnscan
 
-# そのまま実行（インストール不要）
+# Run it directly (no install)
 ./vulnscan scan /path/to/your-app
 
-# インストールして使う場合
+# Or install it
 python3 -m pip install -e .
 vulnscan scan .
 ```
 
-出力例:
+Example output (中 means medium):
 
 ```
 vulnscan 0.1.0 — /path/to/your-app
@@ -44,92 +48,92 @@ vulnscan 0.1.0 — /path/to/your-app
     クロスサイトスクリプティング / CWE-79 / A03:2021
 ```
 
-## 主なコマンド
+## Commands
 
 ```sh
-# 基本
+# Basic
 ./vulnscan scan <path>
 
-# Markdown / JSON / SARIF で保存
+# Save as Markdown / JSON / SARIF
 ./vulnscan scan . --format md   -o security-report.md
 ./vulnscan scan . --format json -o vulnscan.json
-./vulnscan scan . --format sarif -o vulnscan.sarif   # GitHub Code Scanning 用
+./vulnscan scan . --format sarif -o vulnscan.sarif   # for GitHub Code Scanning
 
-# 重要度・カテゴリで絞る
+# Filter by severity or category
 ./vulnscan scan . --min-severity medium
 ./vulnscan scan . --category secret --category injection
 
-# 依存パッケージの既知CVEも調べる（ネットワーク使用）
+# Also check dependencies for known CVEs (uses the network)
 ./vulnscan scan . --deps
 
-# コミットしていない変更ファイルだけ（pre-commit 用）
+# Only files with uncommitted changes (for pre-commit)
 ./vulnscan scan . --changed --fail-on high
 
-# PR の差分だけ（CI 用。base との差分＋コミットしていない変更）
+# Only the PR's changes (for CI: the diff from base plus uncommitted changes)
 ./vulnscan scan . --base origin/main --fail-on high
 
-# 言語を選んで見る（js・ts・py・flutter・go など。カンマで複数）
+# Pick languages (js, ts, py, flutter, go, ...; comma-separated)
 ./vulnscan scan . --lang js,py
-./vulnscan scan . --lang            # 値を付けないと、見つかった言語から番号で選ぶ（端末のときだけ）
+./vulnscan scan . --lang            # without a value, pick from the languages found by number (terminal only)
 
-# 言語とフレームワークを見分けるだけ（スキャンはしない）
+# Only detect languages and frameworks (no scan)
 ./vulnscan detect .
 ./vulnscan detect . --json
 
-# ルール一覧と説明
+# List the rules and explain one
 ./vulnscan rules
 ./vulnscan explain SEC-013
 
-# CI 用の終了コード: 0=合格 / 1=閾値以上の指摘あり / 2=エラー
+# Exit codes for CI: 0 = pass / 1 = findings at or above the threshold / 2 = error
 ./vulnscan scan . --fail-on high
 ```
 
-## 何を検査するか
+## What it checks
 
-| カテゴリ | 例 |
+| Category | Examples |
 |---|---|
-| 秘密情報の露出 | AWS / Stripe / GitHub トークン、秘密鍵、YAML・`.env` 形式に平文で書いた値、`.env` のコミット（サブフォルダも）、クライアント露出する環境変数 |
-| インジェクション | `eval`、`shell=True`、SQL の文字列連結、`pickle` / `yaml.load`、PHP の `unserialize` |
-| XSS | `dangerouslySetInnerHTML`、`innerHTML`、`v-html`、SVG の直接配信 |
-| 暗号・乱数 | MD5 / SHA1、AES-ECB、トークン生成への `Math.random` / `random` |
-| 認証・認可 | JWT の `alg: none`、`verify=False`、CORS ワイルドカード、CSRF 無効化 |
-| 通信の安全性 | `rejectUnauthorized: false`、`InsecureSkipVerify`、`verify=False` |
-| 設定ミス | `DEBUG=True`、Dockerfile の `ENV` に秘密情報、root 実行、`privileged: true` |
-| CI/CD | GitHub Actions のスクリプトインジェクション、`pull_request_target` の危険な checkout |
-| モバイル・Firebase | Dart の証明書の検証の無効化・平文の通信・SharedPreferences のトークン、Android の `usesCleartextTraffic`・`debuggable`、iOS の ATS の例外、Firestore / Storage のルールの `if true` |
-| 依存関係 | `npm audit` / `pnpm audit` / `yarn audit` / `pip-audit` / `composer audit`、pub・Go・Cargo・Bundler・Poetry・uv などは `osv-scanner`（`--deps` 時。サブフォルダの lockfile も見る。監査できなかったときは「高」で出す） |
+| Secrets | AWS / Stripe / GitHub tokens, private keys, plain-text values in YAML and `.env`-style files, committed `.env` files (subfolders too), environment variables exposed to the client |
+| Injection | `eval`, `shell=True`, SQL built by string concatenation, `pickle` / `yaml.load`, PHP `unserialize` |
+| XSS | `dangerouslySetInnerHTML`, `innerHTML`, `v-html`, serving SVG directly |
+| Crypto and randomness | MD5 / SHA1, AES-ECB, `Math.random` / `random` for tokens |
+| Authentication and authorization | JWT `alg: none`, `verify=False`, wildcard CORS, disabled CSRF |
+| Transport security | `rejectUnauthorized: false`, `InsecureSkipVerify`, `verify=False` |
+| Misconfiguration | `DEBUG=True`, secrets in a Dockerfile `ENV`, running as root, `privileged: true` |
+| CI/CD | script injection in GitHub Actions, unsafe checkouts in `pull_request_target` |
+| Mobile and Firebase | disabled certificate checks, cleartext traffic and tokens in SharedPreferences in Dart; Android `usesCleartextTraffic` and `debuggable`; iOS ATS exceptions; `if true` in Firestore / Storage rules |
+| Dependencies | `npm audit` / `pnpm audit` / `yarn audit` / `pip-audit` / `composer audit`; pub, Go, Cargo, Bundler, Poetry, uv and others through `osv-scanner` (with `--deps`; lockfiles in subfolders too; an audit that cannot run is reported as high) |
 
-全ルールは `./vulnscan rules`、詳細は `./vulnscan explain <ID>` で確認できます。
+See every rule with `./vulnscan rules` and the details of one with `./vulnscan explain <ID>`.
 
-### 言語ごとの守備範囲
+### Coverage by language
 
-秘密のルール（19）はどの言語のファイルにも効きます。危ない書き方のルールは言語ごとです。
+The 19 secret rules apply to files in every language. The rules for risky code are per language.
 
-| 言語 | ルール | ほかに |
+| Language | Rules | Also |
 |---|---:|---|
 | JavaScript/TypeScript | 17 | |
 | Python | 12 | |
 | PHP | 7 | |
 | Go | 6 | |
-| Dart/Flutter | 5 | Android の manifest（2）・iOS の Info.plist（1）・Firebase のルール（3） |
+| Dart/Flutter | 5 | Android manifest (2), iOS Info.plist (1), Firebase rules (3) |
 | Ruby | 3 | |
 | Java/Kotlin/Scala | 1 | |
-| Swift・シェル・Rust・C/C++ など | 0 | |
-| Dockerfile・YAML・GitHub Actions・.env | 2・2・2・1 | |
+| Swift, shell, Rust, C/C++ and others | 0 | |
+| Dockerfile, YAML, GitHub Actions, .env | 2, 2, 2, 1 | |
 
-レポートの最後に、見つかった言語とその言語のルールの数、見分けたフレームワークを出します。0 個の言語は「秘密の置き忘れだけを確認」と出るので、その部分はコードレビューか、下の「エージェントから使う」で補ってください。
+At the end of the report, vulnscan lists the languages it found with their rule counts, and the frameworks it detected. A language with no rules is marked as checked for leftover secrets only (秘密の置き忘れだけを確認); cover that part with a code review or with the agent skill below.
 
 ```
 言語: Dart/Flutter 211（5 ルール）、JavaScript/TypeScript 211（17 ルール）、Swift 3（言語のルールなし。秘密の置き忘れだけを確認）
 フレームワーク: Firebase（functions/package.json）、Flutter（app/pubspec.yaml）
 ```
 
-見分けるフレームワーク: Next.js・Expo/React Native・Express・Hono・Supabase・Firebase・Flutter・Cloudflare Workers・Django・FastAPI・Flask・Rails・Laravel（`package.json` の依存、`pubspec.yaml`、`requirements*.txt`・`pyproject.toml`、`firebase.json`・`wrangler.toml` などの目印のファイルから。monorepo のサブフォルダも見ます）。
+Detected frameworks: Next.js, Expo/React Native, Express, Hono, Supabase, Firebase, Flutter, Cloudflare Workers, Django, FastAPI, Flask, Rails and Laravel. They are detected from marker files such as the dependencies in `package.json`, `pubspec.yaml`, `requirements*.txt` and `pyproject.toml`, `firebase.json` and `wrangler.toml`, including monorepo subfolders.
 
-### 言語を選ぶ
+### Picking languages
 
-`--lang js,py` で、その言語のファイルだけを見ます（`js`・`ts`・`javascript/typescript`・`py`・`flutter`・`dart`・`go`・`kotlin` などの名前が使えます）。
-`--lang` だけで値を付けないと、見つかった言語を番号つきで出すので、選んで Enter を押します（空のまま Enter ですべて）。
+`--lang js,py` scans only files in those languages (names such as `js`, `ts`, `javascript/typescript`, `py`, `flutter`, `dart`, `go` and `kotlin` work).
+`--lang` without a value lists the languages found with numbers; type your choice and press Enter (an empty answer means all).
 
 ```
 見る言語を選んでください（番号か名前をカンマ区切りで。空のまま Enter ですべて）:
@@ -138,71 +142,70 @@ vulnscan 0.1.0 — /path/to/your-app
 > 1
 ```
 
-端末でないとき（CI・エージェント）は番号では選べないので、値を付けてください。
-`--lang` で外すのは、選ばなかった言語のコードのファイルだけです。言語の無いファイル（`AndroidManifest.xml`・`Info.plist`・`firestore.rules`・`.env`・`package.json` など）と設定の言語（YAML・Dockerfile）はいつも見るので、`--lang flutter` でも Android・iOS・Firebase のルールが効きます。`.env` のコミットの確認と `--deps` はリポジトリ全体を見ます。番号の一覧で空のまま Enter を押すと、`--lang` を付けないときと同じになります。
+Outside a terminal (CI, agents) you cannot pick by number, so pass a value.
+`--lang` only drops code files in the languages you did not pick. Files without a language (`AndroidManifest.xml`, `Info.plist`, `firestore.rules`, `.env`, `package.json` and so on) and configuration languages (YAML, Dockerfile) are always scanned, so the Android, iOS and Firebase rules still apply with `--lang flutter`. The committed-`.env` check and `--deps` look at the whole repository. An empty answer to the numbered list is the same as no `--lang`.
 
-## エージェントから使う
+## Using it from an agent
 
-[skills/vulnscan/SKILL.md](skills/vulnscan/SKILL.md) は、Claude Code などのエージェントに vulnscan を使わせるための手順書です。
-エージェントは vulnscan を流したあと、指摘ごとにコードを読んで本物か誤検知かを分け、
-言語のルールが無い部分と、正規表現では見えない観点（認可・他人のデータ・SSRF など）を
-[チェックリスト](skills/vulnscan/references/checklists.md) に沿って読み、まとめて報告します。調べている間はファイルを変えません。
+[skills/vulnscan/SKILL.md](skills/vulnscan/SKILL.md) is a playbook (in Japanese) for letting Claude Code or another agent use vulnscan.
+The agent runs vulnscan, reads the code behind each finding to sort real issues from false positives,
+then reads what vulnscan cannot see — languages without rules, and things a regex cannot catch (authorization, other users' data, SSRF and so on) —
+with the [checklists](skills/vulnscan/references/checklists.md), and reports. It does not change any files while checking. When only a branch or PR is checked, it also reads the changed code itself.
 
-Claude Code に入れる（clone した vulnscan のフォルダで実行）:
+Install it for Claude Code (run this in the cloned vulnscan folder):
 
 ```sh
 ln -s "$(pwd)/skills/vulnscan" ~/.claude/skills/vulnscan
 ```
 
-そのあと「vulnscan でこのリポジトリを見て」「公開前にセキュリティチェックして」と頼むと使われます。
-ほかのエージェントでは、SKILL.md を読ませてから頼んでください。
+Then ask "check this repository with vulnscan" or "run a security check before release". For other agents, have them read SKILL.md first.
 
-エージェントが読む JSON（`--format json`）の形は `schema_version` で示します（いまは 1）。
+The JSON that agents read (`--format json`) declares its shape with `schema_version` (currently 1).
 
-| キー | 中身 |
+| Key | Contents |
 |---|---|
-| `summary` | 重要度ごとの件数 |
-| `languages` | `[{language, label, files, rules}]`。`rules` はその言語だけに効くルールの数 |
-| `frameworks` | `[{id, label, evidence}]`。`evidence` は見分けた目印のファイル |
-| `findings` | `[{rule, title, severity, category, path, line, column, evidence, message, remediation, cwe, owasp, fingerprint}]`。`evidence` はマスク済み |
-| `warnings` | `.vulnscanignore` の書き間違いなど |
-| `stats` | `files_scanned`・`files_skipped`・`skipped_reasons`・`suppressed`・`git`・`deps_enabled` など |
+| `summary` | counts per severity |
+| `languages` | `[{language, label, files, rules}]`; `rules` is the number of rules for that language only |
+| `frameworks` | `[{id, label, evidence}]`; `evidence` is the marker file that identified it |
+| `findings` | `[{rule, title, severity, category, path, line, column, evidence, message, remediation, cwe, owasp, fingerprint}]`; `evidence` is masked |
+| `warnings` | mistakes in `.vulnscanignore` and the like |
+| `stats` | `files_scanned`, `files_skipped`, `skipped_reasons`, `suppressed`, `git`, `deps_enabled` and more |
 
-`languages` の `files` の合計は `files_scanned` より少なくなります（Markdown・JSON・XML などは言語に数えません）。
+The `files` in `languages` add up to less than `files_scanned`, because Markdown, JSON, XML and similar files are not counted as a language.
 
-## 誤検知を減らす
+## Reducing false positives
 
 ### 1. `.vulnscanignore`
 
-プロジェクト直下に置きます。
+Put it at the project root.
 
 ```
-# ルールID  パスglob  # 理由（任意）
-SEC-013     legacy/**              # 2026-12-31 までに環境変数へ移行
-XSS-001     components/JsonLd.tsx  # 静的JSON-LDのみ
-*           vendor/**              # 外部ベンダーコード
+# rule ID  path glob  # reason (optional)
+SEC-013     legacy/**              # move to environment variables by 2026-12-31
+XSS-001     components/JsonLd.tsx  # static JSON-LD only
+*           vendor/**              # third-party vendor code
 ```
 
-`expires=2026-12-31` を付けると期限付きにできます。日付の書き方が違う行（`2026/12/31` など）や余分な語がある行は、期限なしで効いてしまわないよう使わず、レポートの「注意」に出します。
+Add `expires=2026-12-31` to make a line expire. A line with a malformed date (such as `2026/12/31`) or extra words is not used, so that it cannot become a suppression with no expiry; it is listed under the notes (注意) in the report.
 
 ```
-SEC-013  scripts/seed.js  expires=2026-12-31  # デモ用の固定パスワード
+SEC-013  scripts/seed.js  expires=2026-12-31  # fixed password for the demo
 ```
 
-### 2. ベースライン
+### 2. Baseline
 
-「今ある指摘は把握済み。新しく増えたものだけ止めたい」ときはベースラインを使います。
+When you know the current findings and only want to stop new ones, use a baseline.
 
 ```sh
 ./vulnscan baseline .
 ./vulnscan scan . --baseline .vulnscan-baseline.json --fail-on medium
 ```
 
-指摘の指紋（ルールID + パス + 該当行の内容）で照合するので、行が移動しても同じ指摘は抑制されます。同じファイルに同じ内容の行が増えた場合は、増えた分を新しい指摘として出します。
+Findings are matched by fingerprint (rule ID + path + the content of the line), so a finding that moves to another line stays suppressed. If more identical lines appear in the same file, the extra ones are reported as new findings.
 
-## CI に組み込む
+## Using it in CI
 
-`.github/workflows/vulnscan.yml` の例:
+Example `.github/workflows/vulnscan.yml`:
 
 ```yaml
 name: vulnscan
@@ -217,14 +220,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # --base で差分を取るため
+          fetch-depth: 0   # needed for the --base diff
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install vulnscan
         run: python -m pip install -e ./vulnscan
       - name: Scan
-        # PR の差分だけを見る。全体を見るなら --base を外す
+        # only the PR's changes; drop --base to scan everything
         run: vulnscan scan . --base "origin/$GITHUB_BASE_REF" --format sarif -o vulnscan.sarif --fail-on high
       - name: Upload SARIF
         if: always()
@@ -233,10 +236,10 @@ jobs:
           sarif_file: vulnscan.sarif
 ```
 
-`./vulnscan` に置いた vulnscan 自身（ルールの正規表現やテスト）は、走査の対象から自動で外します。
-`--base` の差分を取れないとき（ブランチ名の誤り、`fetch-depth` が浅いなど）は、0 ファイルで合格にせず終了コード 2 で止まります。
+A copy of vulnscan at `./vulnscan` (its rule regexes and tests) is left out of the scan automatically.
+If the `--base` diff cannot be taken (a wrong branch name, a shallow `fetch-depth` and so on), vulnscan stops with exit code 2 instead of passing with 0 files.
 
-pre-commit なら:
+For pre-commit:
 
 ```yaml
 - repo: local
@@ -248,31 +251,31 @@ pre-commit なら:
       pass_filenames: false
 ```
 
-## 安全な使い方
+## Using it safely
 
-- 検出した秘密情報は**既定でマスク**されます（`AKIA…AB` のように表示）。どのルールの指摘でも、証拠の行に含まれる秘密は全部伏せます。12 文字未満の値は全部を、20 文字未満の値は先頭 2 文字以外を伏せます。
-- 全文を見たいときだけ `--reveal-secrets` を付けてください。ターミナル履歴やレポートに残る点に注意してください。
-- `--deps` を付けたときだけ、`npm` / `pnpm` / `yarn` / `pip-audit` / `composer` がレジストリへ問い合わせます。
-- `--deps` は、ツールが無い（DEP-010）・失敗した（DEP-011）ときも「高」の指摘として出し、調べていないのに合格にはしません。
-- `--deps` は対象のリポジトリの中で監査ツールを動かします。yarn の `yarn-path` と composer のプラグインは読み込まないようにしていますが、pip-audit は依存を一時環境に入れて解決するため、パッケージのビルド処理が動くことがあります。**自分が管理していないリポジトリには `--deps` を使わないでください。**
-- スキャン対象はローカルパスです。URL を渡す機能はありません。
+- Secrets it finds are **masked by default** (shown like `AKIA…AB`). Secrets on an evidence line are masked in every finding, whichever rule reported it. Values shorter than 12 characters are fully masked; values shorter than 20 show only their first 2 characters.
+- Add `--reveal-secrets` only when you need the full value. Keep in mind that it stays in your terminal history and in reports.
+- Only with `--deps` do `npm` / `pnpm` / `yarn` / `pip-audit` / `composer` query their registries.
+- With `--deps`, a missing tool (DEP-010) or a failed audit (DEP-011) is reported as high, so a project that was not checked never passes.
+- `--deps` runs the audit tools inside the target repository. yarn's `yarn-path` and composer plugins are not loaded, but pip-audit installs the dependencies into a temporary environment to resolve them, so package build steps may run. **Do not use `--deps` on repositories you do not maintain.**
+- Targets are local paths. There is no option to pass a URL.
 
-## 限界
+## Limitations
 
-- 正規表現ベースの静的解析です。データフロー解析はしないため、**誤検知も検知漏れもあります**。
-- 「動いているアプリへの攻撃」はしません。認可のロジック穴や設定の実態は、コードレビューや実際の動作確認で補ってください。
-- バイナリ、1.5MB を超えるファイル、lockfile の中身は走査しません（`--max-file-size` で変更可）。
-- `--deps` は、`package-lock.json` / `pnpm-lock.yaml` / `yarn.lock`（Yarn 1）/ `requirements.txt` / `composer.lock` をそれぞれの監査ツールで、`pubspec.lock`・`go.mod`・`Cargo.lock`・`Gemfile.lock`・`poetry.lock`・`Pipfile.lock`・`uv.lock`・`bun.lock` などを `osv-scanner` で調べます（サブフォルダのものと、`.gitignore` で除外したものも。`--exclude` は効きます。テスト用のフォルダの lockfile の指摘は「低」にします）。`osv-scanner` が無いときは、ほかの監査ツールが無いときと同じく DEP-010（高）です。`bun.lockb` はどのツールでも見られないので「調べていない」（DEP-012、低）と出すだけです。`osv-scanner` の出力の形は公式の説明に合わせて作ってあり、実物ではまだ確かめていません。
-- SEC-013（ハードコードしたパスワード）は、名前が `password`・`secret`・`secret_key`・`api_key`・`access_token` などで終わるもの（`SMTP_PASSWORD`・`dbPassword`・`'X-Api-Key'` を含む）に、引用符かバッククォートで囲んだ、空白を含まない ASCII の値が直接入っているものを見ます（画面の文言を拾わないため）。代入は `=`・`:`・Go の `:=`、`=>` は引用符の名前と Ruby のシンボルだけです。`.env` 形式のファイルは SEC-016（コメントにした行・行末のコメント・`_PWD` も見ます）、翻訳のファイル（`lang/`・`locales/`・`i18n/` などの下の JSON・YAML・PHP など）は見ません。
-  - 次の値は秘密と見なしません（同じ行のほかの値は見ます）: 参照（`process.env`・`${…}`・値の全体が `"$VAR"`）、仮の値（`changeme`・`your-…`・`<…>`・`__…`・`xxxxxx`）、URL（`user:pass@` の入ったものは見ます）・`env()`・小文字だけの道、i18n のキー（`auth.password.label`）、英字と `_` だけの大文字の識別子、小文字の単語だけの値（`"local-test-key"`）、camelCase か `/` で区切った名前を表す値（`'newPassword'`・`'auth/RESET_PASSWORD'`）、名前の前に言葉が付いたものの英字だけの値（`"showPassword": "Anzeigen"`）、Laravel の検証ルール、bcrypt のハッシュ、公開前提の値（Turnstile の試験用の秘密、RevenueCat の公開キー）、ほかのルール（SEC-002・005〜011）が見るトークンの形の値（二重に数えないため）。そのため、小文字の単語だけの弱いパスワード（`"my-super-secret"`）と、名前の前に言葉が付いたものの英字だけのパスワード（`DB_PASSWORD = "topsecret"`）は拾いません（名前がちょうど `password` なら、同じ値でも拾います）。
-  - 秘密と見なさない値も、ほかのルールの証拠の中では伏せます。名前を広げたので伏せる値が増え、その行のほかの指摘は指紋が一度変わります（ベースラインを使っているなら作り直してください）。
-- INJ-009（JS の SQL の組み立て）は、`query`・`execute`・`raw` と、sqlite3・better-sqlite3・Prisma の `all`・`get`・`run`・`each`・`exec`・`prepare`・`$queryRawUnsafe`・`$executeRawUnsafe` を見ます（TypeScript の型引数 `<User[]>` も）。どれも、値をつなぐ所だけです: SQL の `'…'` の中（`\'` を含む）、`=`・`<`・`>`・`LIKE`・`ILIKE`・`GLOB`・`REGEXP` の直後の `${}` や連結。`"…"` は Postgres の識別子でもあるので、比べる演算子の直後のものだけです。連結は `"…" + 式 + "…"` と続く文字列のどれかを見ます（間の式に引用符があるとその先は見ません）。入れ子のテンプレート（`${cond ? `AND id = ${id}` : ''}`）の中も見ます。後者の呼び方は、文字列が SQL の動詞で始まるものだけです。列の一覧・`WHERE`・`IN (?, ?)` を組み立てて値をバインドする書き方は対象外です。テストのファイルの指摘は「低」にします。
-- 直下の `.env` は `.gitignore` されていても、`NEXT_PUBLIC_` などの露出チェックのために読みます（内容は外部送信しません）。サブフォルダの `.env` は、git に入っているものと `.gitignore` で除外されていないものだけを見ます。
-- 検出結果は「レビューの入口」です。修正は必ずテストとセットで行ってください。
+- It is regex-based static analysis without data-flow analysis, so **there are false positives and missed issues**.
+- It never attacks a running app. Cover authorization logic and the actual configuration with code review and by checking the running app.
+- Binaries, files over 1.5 MB and the contents of lockfiles are not scanned (change the size limit with `--max-file-size`).
+- `--deps` audits `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` (Yarn 1) / `requirements.txt` / `composer.lock` with their own audit tools, and `pubspec.lock`, `go.mod`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`, `Pipfile.lock`, `uv.lock`, `bun.lock` and others with `osv-scanner` (including those in subfolders and those excluded by `.gitignore`; `--exclude` applies; findings for lockfiles in test folders are low). Without `osv-scanner`, those lockfiles are reported as DEP-010 (high), like any other missing audit tool. `bun.lockb` cannot be read by any tool, so it is only reported as not checked (DEP-012, low). The handling of `osv-scanner`'s output follows its official documentation and has not yet been checked against real output.
+- SEC-013 (hard-coded passwords) looks at names that end with `password`, `secret`, `secret_key`, `api_key`, `access_token` and the like (including `SMTP_PASSWORD`, `dbPassword` and `'X-Api-Key'`) assigned an ASCII value without spaces in quotes or backticks (so that UI text is not reported). Assignments are `=`, `:` and Go's `:=`; `=>` only after a quoted name or a Ruby symbol. `.env`-style files are left to SEC-016 (which also reads commented-out lines, trailing comments and `_PWD`), and translation files (JSON, YAML, PHP and the like under `lang/`, `locales/`, `i18n/` and similar folders) are not scanned.
+  - These values are not treated as secrets (other values on the same line are still checked): references (`process.env`, `${…}`, a whole value of `"$VAR"`), placeholders (`changeme`, `your-…`, `<…>`, `__…`, `xxxxxx`), URLs (unless they contain `user:pass@`), `env()`, lowercase paths, i18n keys (`auth.password.label`), uppercase identifiers made only of letters and `_`, values made only of lowercase words (`"local-test-key"`), camelCase or `/`-separated values that name a credential (`'newPassword'`, `'auth/RESET_PASSWORD'`), letters-only values on names with a prefix (`"showPassword": "Anzeigen"`), Laravel validation rules, bcrypt hashes, values meant to be public (Turnstile's test secret, RevenueCat public keys), and tokens that other rules (SEC-002 and SEC-005 to SEC-011) already report, so they are not counted twice. As a result, weak passwords made only of lowercase words (`"my-super-secret"`) and letters-only passwords on names with a prefix (`DB_PASSWORD = "topsecret"`) are not reported (the same value is reported when the name is exactly `password`).
+  - Values that are not treated as secrets are still masked in the evidence of other findings. Because more names are matched now, more values are masked, and other findings on those lines get a new fingerprint once (regenerate your baseline if you use one).
+- INJ-009 (SQL built in JS) looks at `query`, `execute` and `raw`, and at the sqlite3, better-sqlite3 and Prisma calls `all`, `get`, `run`, `each`, `exec`, `prepare`, `$queryRawUnsafe` and `$executeRawUnsafe` (TypeScript type arguments such as `<User[]>` too). In every case it only reports where a value is joined: inside SQL `'…'` (including `\'`), or `${}` and concatenation right after `=`, `<`, `>`, `LIKE`, `ILIKE`, `GLOB` or `REGEXP`. `"…"` counts only right after a comparison, because Postgres also uses it for identifiers. For concatenation it checks every string in `"…" + expression + "…"` (it stops at an expression that contains quotes). It also looks inside nested templates (`${cond ? `AND id = ${id}` : ''}`). The sqlite3, better-sqlite3 and Prisma calls are only checked when the string starts with an SQL verb. Building column lists, `WHERE` clauses or `IN (?, ?)` while binding the values is not reported. Findings in test files are low.
+- The `.env` at the root is read even when it is gitignored, to check exposure such as `NEXT_PUBLIC_` (its contents are never sent anywhere). `.env` files in subfolders are read only when they are committed or not excluded by `.gitignore`.
+- Findings are a starting point for review. Always fix them together with tests.
 
-## ルールを追加する
+## Adding a rule
 
-`src/vulnscan/rules/code.py` に追記するだけです。
+Add it to `src/vulnscan/rules/code.py`. Write the messages in Japanese, like the other rules.
 
 ```python
 LineRule(
@@ -288,34 +291,34 @@ LineRule(
 ),
 ```
 
-`languages` は `python` / `javascript` / `php` / `ruby` / `go` / `java` / `docker` / `yaml` など。
-`multiline=True` で複数行、`require_file` / `require_line` で前提条件を絞れます。
+`languages` takes `python` / `javascript` / `php` / `ruby` / `go` / `java` / `docker` / `yaml` and others.
+`multiline=True` matches across lines, and `require_file` / `require_line` narrow down when the rule applies.
 
-## 開発
+## Development
 
-vulnscan のフォルダで:
+In the vulnscan folder:
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-構成:
+Layout:
 
 ```
 vulnscan/
-├── vulnscan              # インストール不要のラッパー
+├── vulnscan              # wrapper that needs no install
 ├── src/vulnscan/
-│   ├── cli.py            # コマンドライン
-│   ├── engine.py         # スキャン実行
-│   ├── files.py          # ファイル列挙（gitignore 尊重）
-│   ├── ignore.py         # 抑制リスト / ベースライン
+│   ├── cli.py            # command line
+│   ├── engine.py         # runs the scan
+│   ├── files.py          # lists files (respects .gitignore)
+│   ├── ignore.py         # suppression list / baseline
 │   ├── report.py         # text / Markdown / JSON / SARIF
-│   └── rules/            # 検出ルール
-├── skills/vulnscan/      # エージェント向けの手順書とチェックリスト
+│   └── rules/            # detection rules
+├── skills/vulnscan/      # playbook and checklists for agents (Japanese)
 ├── tests/
-└── scripts/scan-all.sh   # vulnscan と同じ階層のプロジェクトをまとめてスキャン
+└── scripts/scan-all.sh   # scans every project next to the vulnscan folder
 ```
 
-## ライセンス
+## License
 
 MIT
