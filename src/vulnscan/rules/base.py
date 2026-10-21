@@ -31,6 +31,7 @@ LANGUAGE_EXTENSIONS = {
     "go": {".go"},
     "java": {".java", ".kt", ".kts", ".scala"},
     "csharp": {".cs"},
+    "dart": {".dart"},
     "shell": {".sh", ".bash", ".zsh", ".fish"},
     "sql": {".sql"},
     "yaml": {".yml", ".yaml"},
@@ -41,6 +42,80 @@ LANGUAGE_FILENAMES = {
     "docker": ("Dockerfile",),
     "make": ("Makefile", "GNUmakefile"),
 }
+
+# 言語のルールはまだ無いが、見つかったことはレポートに出す言語（秘密の置き忘れだけを確認している、と伝えるため）
+OTHER_LANGUAGE_EXTENSIONS = {
+    "swift": {".swift"},
+    "rust": {".rs"},
+    "c": {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp"},
+    "objective-c": {".m", ".mm"},
+    "elixir": {".ex", ".exs"},
+    "lua": {".lua"},
+    "perl": {".pl", ".pm"},
+}
+
+# 画面と --lang の番号の一覧に出す名前
+LANGUAGE_LABELS = {
+    "javascript": "JavaScript/TypeScript",
+    "python": "Python",
+    "php": "PHP",
+    "ruby": "Ruby",
+    "go": "Go",
+    "java": "Java/Kotlin/Scala",
+    "csharp": "C#",
+    "dart": "Dart/Flutter",
+    "shell": "シェル",
+    "yaml": "YAML",
+    "docker": "Dockerfile",
+    "swift": "Swift",
+    "rust": "Rust",
+    "c": "C/C++",
+    "objective-c": "Objective-C",
+    "elixir": "Elixir",
+    "lua": "Lua",
+    "perl": "Perl",
+}
+
+# --lang で受け付ける別名（小文字で比べる。表示の名前もそのまま使える）
+LANGUAGE_ALIASES = {
+    "javascript": ("js", "ts", "javascript", "typescript", "js/ts", "jsx", "tsx", "node"),
+    "python": ("py", "python"),
+    "php": ("php",),
+    "ruby": ("rb", "ruby"),
+    "go": ("go", "golang"),
+    "java": ("java", "kotlin", "kt", "scala", "java/kotlin"),
+    "csharp": ("cs", "c#", "csharp"),
+    "dart": ("dart", "flutter"),
+    "shell": ("sh", "bash", "zsh", "shell"),
+    "yaml": ("yaml", "yml"),
+    "docker": ("docker", "dockerfile"),
+    "swift": ("swift",),
+    "rust": ("rust", "rs"),
+    "c": ("c", "cpp", "c++"),
+    "objective-c": ("objc", "objective-c"),
+    "elixir": ("elixir", "ex"),
+    "lua": ("lua",),
+    "perl": ("perl", "pl"),
+}
+
+# データや手順のファイル。言語ごとの対象範囲には出さない
+NON_CODE_LANGUAGES = {"json", "sql", "make"}
+
+# --lang で絞っても、いつも見る設定の言語（言語の無いファイル＝manifest・plist・.rules・.env なども同じく見る）
+CONFIG_LANGUAGES = {"yaml", "docker", "json", "sql", "make"}
+
+
+def language_of(name: str) -> Optional[str]:
+    """ファイル名から言語を決める（中身は読まない）。ルールの言語の判定も、--lang の絞り込みも、これだけを使う。"""
+    suffix = name[name.rfind(".") :].lower() if "." in name else ""
+    for lang, suffixes in (*LANGUAGE_EXTENSIONS.items(), *OTHER_LANGUAGE_EXTENSIONS.items()):
+        if suffix in suffixes:
+            return lang
+    for lang, names in LANGUAGE_FILENAMES.items():
+        if any(name == n or name.startswith(n + ".") for n in names):
+            return lang
+    return None
+
 
 TEST_PATH_RE = re.compile(
     r"(^|/)(tests?|__tests__|specs?|fixtures?|mocks?|__mocks__|examples?|e2e|integration[-_]?tests?)(/|$)"
@@ -69,15 +144,7 @@ def matches_any(path: str, globs: Iterable[str]) -> bool:
 
 def language_matches(sf: SourceFile, languages: Iterable[str]) -> bool:
     languages = tuple(languages)
-    if not languages:
-        return True
-    for lang in languages:
-        if sf.suffix in LANGUAGE_EXTENSIONS.get(lang, ()):  # type: ignore[arg-type]
-            return True
-        for prefix in LANGUAGE_FILENAMES.get(lang, ()):
-            if sf.name == prefix or sf.name.startswith(prefix + "."):
-                return True
-    return False
+    return not languages or language_of(sf.name) in languages
 
 
 def _clip(text: str, limit: int = 300) -> str:
@@ -155,8 +222,10 @@ class LineRule:
             severity = self.test_severity
 
         for lineno, subject, _match in self._iter_matches(sf):
+            # 複数行のルールは、当たった文字列ではなく、当たり始めた行でコメントかを見る
+            line = sf.lines[lineno - 1] if self.multiline and lineno <= len(sf.lines) else subject
             # コメントに書いた秘密もリポジトリからは読めるので、秘密のルールはコメント行も見る
-            if self.skip_comments and not self.secret and _is_comment(subject):
+            if self.skip_comments and not self.secret and _is_comment(line):
                 continue
             if self._require_line and not self._require_line.search(subject):
                 continue

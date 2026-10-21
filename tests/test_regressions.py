@@ -137,7 +137,8 @@ class DependencyAuditTests(Case):
         self.assertEqual(finding.severity.label, "high")
 
     def test_unsupported_lockfile_is_reported(self) -> None:
-        self.write({"go.mod": "module x\n", "go.sum": "x v1 h1:abc=\n"})
+        # go.mod などは osv-scanner で見る（無ければ DEP-010）。どのツールでも見られないのは bun.lockb
+        self.write({"package.json": "{}\n", "bun.lockb": "x\n"})
         self.assertTrue(self.findings(self.scan_deps(), "DEP-012"))
 
     def test_yarn_without_audit_summary_is_failure(self) -> None:

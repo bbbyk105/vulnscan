@@ -26,7 +26,7 @@ DEP_RULES_META = [
         "title": "依存監査ツールが見つからない",
         "severity": "high",
         "category": "dependency",
-        "message": "--deps を付けたのに、lockfile に対応する監査ツール（npm / pnpm / yarn / pip-audit / composer）"
+        "message": "--deps を付けたのに、lockfile に対応する監査ツール（npm / pnpm / yarn / pip-audit / composer / osv-scanner）"
         "が無く、既知の脆弱性を確認できていません。",
         "remediation": "ツールをインストールしてから、もう一度 --deps を付けて実行してください。",
     },
@@ -43,8 +43,8 @@ DEP_RULES_META = [
         "title": "--deps の対象外の lockfile",
         "severity": "low",
         "category": "dependency",
-        "message": "bun・Poetry・uv・Pipenv・Cargo・Go・Bundler の lockfile は監査していません。",
-        "remediation": "そのエコシステムの監査ツールを別に流してください。",
+        "message": "どのツールでも見られない lockfile（バイナリの形式の bun.lockb）です。",
+        "remediation": "テキストの形式の bun.lock に移すと、osv-scanner で調べられます。",
     },
 ]
 
@@ -88,7 +88,3 @@ def all_rule_meta() -> list:
     meta.extend(_repo_rules_meta())
     meta.extend(DEP_RULES_META)
     return meta
-
-
-def lockfiles_present(root) -> list:
-    return [name for name in deps.LOCKFILES if (root / name).is_file()]

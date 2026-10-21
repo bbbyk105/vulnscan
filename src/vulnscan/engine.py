@@ -9,14 +9,16 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from . import ignore as ignore_mod
+from .detect import detect_frameworks, language_summary
 from .files import collect, load
 from .models import Finding, Severity
-from .rules import FILE_RULES, LINE_RULES, all_rule_meta, lockfiles_present
+from .rules import FILE_RULES, LINE_RULES, all_rule_meta
+from .rules.base import CONFIG_LANGUAGES, language_of
 from .rules.config import repo_checks
-from .rules.deps import dependency_findings
+from .rules.deps import DEPENDENCY_FILES, LOCKFILES, OSV_LOCKFILES, dependency_findings
 
 
 @dataclass
@@ -30,6 +32,9 @@ class ScanOptions:
     max_file_bytes: int = 1_500_000
     deps: bool = False
     changed_only: bool = False
+    languages: tuple = ()  # 空ならすべて。--lang で選んだ言語のキー
+    # 番号で選ぶ一覧（--lang だけのとき）。スキャンと同じファイルの集まりの言語を受け取り、選んだキー（None ならすべて）を返す
+    pick_languages: Optional[Callable[[list], Optional[list]]] = None
     base: Optional[str] = None
     reveal_secrets: bool = False
 
@@ -43,6 +48,10 @@ class ScanResult:
     duration: float = 0.0
     lockfiles: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    # [{"language", "label", "files", "rules"}]。rules はその言語だけに効くルールの数（秘密のルールは全言語に効く）
+    languages: list = field(default_factory=list)
+    # [{"id", "label", "evidence"}]。--lang で絞っても、リポジトリ全体から見分ける
+    frameworks: list = field(default_factory=list)
 
     @property
     def counts(self) -> Counter:
@@ -64,13 +73,26 @@ def scan(root: Path, options: Optional[ScanOptions] = None) -> ScanResult:
         changed_only=options.changed_only,
         base=options.base,
         extra_excludes=options.exclude,
+        dependency_names=DEPENDENCY_FILES,
     )
+
+    frameworks = detect_frameworks(root, fileset.inventory) if root.is_dir() else []
+
+    files = fileset.files
+    selected = options.languages
+    if options.pick_languages is not None:
+        selected = tuple(options.pick_languages(language_summary(p.name for p in files)) or ())
+    if selected:
+        # 選ばなかった言語のコードのファイルだけを外す。言語の無いファイル（manifest・plist・.rules・.env・package.json）と
+        # 設定の言語（YAML・Dockerfile）はいつも見る（Android・iOS・Firebase・.env のルールが当たるのはこれらのファイル）
+        wanted = set(selected)
+        files = [p for p in files if (lang := language_of(p.name)) is None or lang in wanted or lang in CONFIG_LANGUAGES]
 
     skipped: Counter = Counter()
     loaded = []
     total_bytes = 0
 
-    for path in fileset.files:
+    for path in files:
         try:
             rel = path.relative_to(root).as_posix()
         except ValueError:
@@ -94,7 +116,7 @@ def scan(root: Path, options: Optional[ScanOptions] = None) -> ScanResult:
 
     scanned = [sf.relpath for sf in loaded]
     findings.extend(repo_checks(root, fileset.tracked, scanned, fileset.git))
-    findings.extend(dependency_findings(root, options.deps))
+    findings.extend(dependency_findings(root, options.deps, fileset.dependency_files))
 
     if options.categories:
         wanted = set(options.categories)
@@ -129,8 +151,10 @@ def scan(root: Path, options: Optional[ScanOptions] = None) -> ScanResult:
 
     unique.sort(key=lambda f: (-int(f.severity), f.location.path, f.location.line))
 
+    languages = language_summary(sf.name for sf in loaded)
+
     stats = {
-        "files_considered": len(fileset.files),
+        "files_considered": len(files),
         "files_scanned": len(loaded),
         "files_skipped": sum(skipped.values()),
         "skipped_reasons": dict(skipped),
@@ -147,6 +171,10 @@ def scan(root: Path, options: Optional[ScanOptions] = None) -> ScanResult:
         suppressed=suppressed,
         stats=stats,
         duration=time.monotonic() - started,
-        lockfiles=lockfiles_present(root),
+        lockfiles=[
+            rel for rel in fileset.dependency_files if rel.rsplit("/", 1)[-1] in {*LOCKFILES, *OSV_LOCKFILES}
+        ],
         warnings=warnings,
+        languages=languages,
+        frameworks=frameworks,
     )

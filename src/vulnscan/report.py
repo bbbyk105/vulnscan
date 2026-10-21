@@ -135,16 +135,40 @@ def _format_finding_text(finding: Finding, color: bool, group_by: str) -> list:
     return lines
 
 
+NO_LANGUAGE_RULES = "言語のルールなし。秘密の置き忘れだけを確認"
+
+# JSON の形を変えたら上げる（エージェントがこの形を前提に読む）
+JSON_SCHEMA_VERSION = 1
+
+
+def language_scope(item: dict) -> str:
+    """言語ごとの対象範囲の言い方（レポート・detect・番号の一覧で同じものを使う）。"""
+    return f"{item['rules']} ルール" if item["rules"] else NO_LANGUAGE_RULES
+
+
+def _language_summary(result) -> str:
+    return "、".join(f"{item['label']} {item['files']}（{language_scope(item)}）" for item in result.languages)
+
+
+def _framework_summary(result) -> str:
+    return "、".join(f"{item['label']}（{item['evidence']}）" for item in result.frameworks)
+
+
 def _append_footer(lines: list, result, color: bool) -> None:
     dim = DIM if color else ""
     reset = RESET if color else ""
+    if result.languages:
+        lines.append(f"言語: {_language_summary(result)}")
+    if result.frameworks:
+        lines.append(f"フレームワーク: {_framework_summary(result)}")
     for warning in result.warnings:
         lines.append(f"注意: {warning}")
     if result.suppressed:
         lines.append(f"{dim}抑制: {len(result.suppressed)} 件（.vulnscanignore / baseline）{reset}")
     if result.lockfiles and not result.stats.get("deps_enabled"):
         lines.append(
-            f"{dim}ヒント: {', '.join(result.lockfiles)} を検出しました。"
+            f"{dim}ヒント: {', '.join(result.lockfiles[:3])}"
+            f"{f' ほか {len(result.lockfiles) - 3} 個' if len(result.lockfiles) > 3 else ''} を検出しました。"
             f"既知CVEも調べるには `vulnscan scan --deps` を実行してください。{reset}"
         )
     if result.stats.get("files_skipped"):
@@ -169,6 +193,14 @@ def render_markdown(result) -> str:
     for sev in ORDER:
         lines.append(f"| {SEVERITY_JA[sev]} | {result.count(sev)} |")
     lines.append("")
+
+    if result.languages:
+        lines.extend(["## 対象の言語", "", "| 言語 | ファイル | その言語のルール |", "|---|---:|---|"])
+        for item in result.languages:
+            lines.append(f"| {item['label']} | {item['files']} | {language_scope(item)} |")
+        lines.append("")
+    if result.frameworks:
+        lines.extend([f"フレームワーク: {_framework_summary(result)}", ""])
 
     if result.warnings:
         lines.extend(["## 注意", ""])
@@ -213,12 +245,15 @@ def render_json(result) -> str:
     payload = {
         "tool": "vulnscan",
         "version": __version__,
+        "schema_version": JSON_SCHEMA_VERSION,
         "root": str(result.root),
         "scanned_at": datetime.now().isoformat(timespec="seconds"),
         "duration_seconds": round(result.duration, 3),
         "stats": result.stats,
         "summary": {SEVERITY_EN[sev]: result.count(sev) for sev in ORDER},
         "warnings": result.warnings,
+        "languages": result.languages,
+        "frameworks": result.frameworks,
         "findings": [f.to_dict() for f in result.findings],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
