@@ -96,7 +96,7 @@ The 19 secret rules apply to files in every language. The rules for risky code a
 | Swift, Rust, C/C++ and others | 0 | only checked for leftover secrets |
 | Dockerfile, YAML, GitHub Actions, .env | 2, 2, 2, 1 | |
 
-The report ends with the languages found and the frameworks detected (Next.js, Expo/React Native, Express, Hono, Supabase, Firebase, Flutter, Cloudflare Workers, Django, FastAPI, Flask, Rails and Laravel, from marker files such as `package.json` and `pubspec.yaml`, monorepo subfolders included). Cover languages without rules with a code review or the [agent skill](#using-it-from-an-agent). How some rules decide what to report is in [docs/rules.md](docs/rules.md).
+The report ends with the languages found and the frameworks and services detected: web frameworks such as Next.js, Rails, Laravel, Spring Boot and Gin; platforms such as Supabase, Firebase and AWS; libraries such as Stripe and MCP; and Docker Compose, Kubernetes and Terraform. They are detected from marker files such as `package.json`, `go.mod` and `pubspec.yaml`, monorepo subfolders included. Cover languages without rules with a code review or the [agent skill](#using-it-from-an-agent). How some rules decide what to report is in [docs/rules.md](docs/rules.md).
 
 ## Picking languages
 
@@ -130,7 +130,7 @@ Outside a terminal (CI, agents), pass a value. Where the terminal cannot read si
 [skills/vulnscan/SKILL.md](skills/vulnscan/SKILL.md) is a playbook (in Japanese) for letting Claude Code or another agent use vulnscan. The agent:
 
 1. runs vulnscan and reads the code behind each finding to sort real issues from false positives,
-2. reads what vulnscan cannot see — languages without rules, and things a regex cannot catch (authorization, other users' data, SSRF and so on) — with the [checklists](skills/vulnscan/references/checklists.md),
+2. reads what vulnscan cannot see — languages without rules, and things a regex cannot catch (authorization, other users' data, SSRF and so on) — with a [checklist](skills/vulnscan/references/checklists.md) for each framework and service detected,
 3. reports, without changing any files. For a branch or PR, it also reads the changed code itself.
 
 Install it for Claude Code (in the cloned vulnscan folder), then ask "check this repository with vulnscan":
