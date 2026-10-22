@@ -34,8 +34,8 @@ To use it as the `vulnscan` command, run `python3 -m pip install -e .`.
 Example output (中 means medium):
 
 ```
-vulnscan 0.2.0 — /path/to/your-app
-2026-10-21 19:18 · 84 ファイル · 86 ルール · 0.11 秒
+vulnscan 0.3.0 — /path/to/your-app
+2026-10-21 19:18 · 84 ファイル · 92 ルール · 0.11 秒
 
 合計 2 件（中 2）
 
@@ -78,7 +78,7 @@ Exit codes for CI with `--fail-on`: `0` pass, `1` findings at or above the thres
 | Misconfiguration | `DEBUG=True`, secrets in a Dockerfile `ENV`, running as root, `privileged: true` |
 | CI/CD | script injection in GitHub Actions, unsafe checkouts in `pull_request_target` |
 | Mobile and Firebase | Dart certificate checks, cleartext traffic and tokens in SharedPreferences; Android `usesCleartextTraffic` and `debuggable`; iOS ATS exceptions; `if true` in Firestore / Storage rules |
-| Shell scripts | `curl … \| sh`, `eval "$@"`, `curl -k`, `StrictHostKeyChecking=no`, `chmod 777`, `rm -rf "$DIR/"*` with a variable that may be empty |
+| Shell scripts | `curl … \| sh`, `eval "$@"`, `curl -k`, `StrictHostKeyChecking=no`, `chmod 777`, `rm -rf "$DIR/"*` when `$DIR` may be empty |
 | Dependencies | `npm` / `pnpm` / `yarn` / `pip-audit` / `composer` audits, and `osv-scanner` for pub, Go, Cargo, Bundler, Poetry, uv and others (with `--deps`) |
 
 The 19 secret rules apply to files in every language. The rules for risky code are per language:
@@ -100,7 +100,7 @@ The report ends with the languages found and the frameworks detected (Next.js, E
 
 ## Picking languages
 
-`--lang js,py` scans only files in those languages (`js`, `ts`, `py`, `flutter`, `dart`, `go`, `kotlin` and other names work).
+`--lang js,py` scans only files in those languages (`js`, `ts`, `py`, `flutter`, `dart`, `go`, `kotlin`, `sh` and other names work).
 
 Run `--lang` without a value in a terminal to choose from the languages found:
 
@@ -244,7 +244,8 @@ jobs:
 - It is regex-based static analysis without data-flow analysis, so **there are false positives and missed issues**. Treat findings as a starting point for review, and fix them together with tests.
 - It never attacks a running app. Cover authorization logic and the actual configuration with code review and by checking the running app.
 - Binaries, files over 1.5 MB (`--max-file-size`) and the contents of lockfiles are not scanned.
-- Details on what SEC-013 (hard-coded passwords) and INJ-009 (SQL in JS) report, how `--deps` audits each lockfile, and how `.env` files are read: [docs/rules.md](docs/rules.md).
+- Shell scripts are checked line by line. Scripts without a file extension, Dockerfile `RUN` lines and GitHub Actions `run:` steps are not checked. CFG-018 (`rm -rf "$DIR/"*`) ignores checks on `$DIR` made inside functions.
+- Details on what SEC-013 (hard-coded passwords), INJ-009 (SQL in JS) and the shell rules report, how `--deps` audits each lockfile, and how `.env` files are read: [docs/rules.md](docs/rules.md).
 
 ## Development
 
@@ -271,7 +272,7 @@ LineRule(
 ),
 ```
 
-`languages` takes `python` / `javascript` / `php` / `ruby` / `go` / `java` / `docker` / `yaml` and others. `multiline=True` matches across lines, and `require_file` / `require_line` narrow down when the rule applies.
+`languages` takes `python` / `javascript` / `php` / `ruby` / `go` / `java` / `shell` / `docker` / `yaml` and others. `multiline=True` matches across lines, `shell_view=True` skips comments and `echo` text in shell scripts, and `require_file` / `require_line` narrow down when the rule applies.
 
 ```
 vulnscan/
