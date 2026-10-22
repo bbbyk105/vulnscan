@@ -31,8 +31,8 @@ cd vulnscan
 出力例:
 
 ```
-vulnscan 0.2.0 — /path/to/your-app
-2026-10-21 19:18 · 84 ファイル · 86 ルール · 0.11 秒
+vulnscan 0.3.0 — /path/to/your-app
+2026-10-21 19:18 · 84 ファイル · 92 ルール · 0.11 秒
 
 合計 2 件（中 2）
 
@@ -75,7 +75,7 @@ vulnscan 0.2.0 — /path/to/your-app
 | 設定ミス | `DEBUG=True`、Dockerfile の `ENV` に秘密情報、root 実行、`privileged: true` |
 | CI/CD | GitHub Actions のスクリプトインジェクション、`pull_request_target` の危険な checkout |
 | モバイル・Firebase | Dart の証明書の検証の無効化・平文の通信・SharedPreferences のトークン、Android の `usesCleartextTraffic`・`debuggable`、iOS の ATS の例外、Firestore / Storage のルールの `if true` |
-| シェルスクリプト | `curl … \| sh`、`eval "$@"`、`curl -k`、`StrictHostKeyChecking=no`、`chmod 777`、空になりうる変数での `rm -rf "$DIR/"*` |
+| シェルスクリプト | `curl … \| sh`、`eval "$@"`、`curl -k`、`StrictHostKeyChecking=no`、`chmod 777`、`$DIR` が空のおそれがある `rm -rf "$DIR/"*` |
 | 依存関係 | `npm` / `pnpm` / `yarn` / `pip-audit` / `composer` の監査、pub・Go・Cargo・Bundler・Poetry・uv などは `osv-scanner`（`--deps` 時） |
 
 秘密のルール（19）はどの言語のファイルにも効きます。危ない書き方のルールは言語ごとです。
@@ -93,11 +93,11 @@ vulnscan 0.2.0 — /path/to/your-app
 | Swift・Rust・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
 | Dockerfile・YAML・GitHub Actions・.env | 2・2・2・1 | |
 
-レポートの最後に、見つかった言語と、見分けたフレームワークを出します（Next.js・Expo/React Native・Express・Hono・Supabase・Firebase・Flutter・Cloudflare Workers・Django・FastAPI・Flask・Rails・Laravel。`package.json`・`pubspec.yaml` などの目印のファイルから。monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールが何を出して何を出さないかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
+レポートの最後に、見つかった言語と、見分けたフレームワークを出します（Next.js・Expo/React Native・Express・Hono・Supabase・Firebase・Flutter・Cloudflare Workers・Django・FastAPI・Flask・Rails・Laravel。`package.json`・`pubspec.yaml` などの目印のファイルから。monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールがどこまで検出するかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
 
 ## 言語を選ぶ
 
-`--lang js,py` で、その言語のファイルだけを見ます（`js`・`ts`・`py`・`flutter`・`dart`・`go`・`kotlin` などの名前が使えます）。
+`--lang js,py` で、その言語のファイルだけを見ます（`js`・`ts`・`py`・`flutter`・`dart`・`go`・`kotlin`・`sh` などの名前が使えます）。
 
 端末で `--lang` だけを付けると、見つかった言語の一覧から選べます。
 
@@ -241,7 +241,8 @@ jobs:
 - 正規表現ベースの静的解析で、データの流れは追いません。**誤検知も検知漏れもあります**。検出結果は「レビューの入口」として扱い、直すときは必ずテストとセットにしてください。
 - 動いているアプリへの攻撃はしません。認可のロジックの穴や設定の実態は、コードレビューと実際の動作の確認で補ってください。
 - バイナリ、1.5MB を超えるファイル（`--max-file-size`）、lockfile の中身は走査しません。
-- SEC-013（ハードコードしたパスワード）と INJ-009（JS の SQL）が何を出して何を出さないか、`--deps` が lockfile ごとに何で監査するか、`.env` をどう読むかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
+- シェルスクリプトは 1 行ずつ検査します。拡張子の無いスクリプト、Dockerfile の `RUN`、GitHub Actions の `run:` は検査しません。CFG-018（`rm -rf "$DIR/"*`）は、関数の中で `$DIR` を確認していても考慮しません。
+- SEC-013（ハードコードしたパスワード）・INJ-009（JS の SQL）・シェルスクリプトのルールがどこまで検出するか、`--deps` が lockfile ごとに何で監査するか、`.env` をどう読むかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
 
 ## 開発
 
@@ -268,7 +269,7 @@ LineRule(
 ),
 ```
 
-`languages` は `python` / `javascript` / `php` / `ruby` / `go` / `java` / `docker` / `yaml` など。`multiline=True` で複数行、`require_file` / `require_line` で前提条件を絞れます。
+`languages` は `python` / `javascript` / `php` / `ruby` / `go` / `java` / `shell` / `docker` / `yaml` など。`multiline=True` で複数行にまたがって照合し、`shell_view=True` でシェルスクリプトのコメントと `echo` の文字列を照合から外し、`require_file` / `require_line` で前提条件を絞れます。
 
 ```
 vulnscan/
