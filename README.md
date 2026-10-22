@@ -78,6 +78,7 @@ Exit codes for CI with `--fail-on`: `0` pass, `1` findings at or above the thres
 | Misconfiguration | `DEBUG=True`, secrets in a Dockerfile `ENV`, running as root, `privileged: true` |
 | CI/CD | script injection in GitHub Actions, unsafe checkouts in `pull_request_target` |
 | Mobile and Firebase | Dart certificate checks, cleartext traffic and tokens in SharedPreferences; Android `usesCleartextTraffic` and `debuggable`; iOS ATS exceptions; `if true` in Firestore / Storage rules |
+| Shell scripts | `curl … \| sh`, `eval "$@"`, `curl -k`, `StrictHostKeyChecking=no`, `chmod 777`, `rm -rf "$DIR/"*` with a variable that may be empty |
 | Dependencies | `npm` / `pnpm` / `yarn` / `pip-audit` / `composer` audits, and `osv-scanner` for pub, Go, Cargo, Bundler, Poetry, uv and others (with `--deps`) |
 
 The 19 secret rules apply to files in every language. The rules for risky code are per language:
@@ -88,10 +89,11 @@ The 19 secret rules apply to files in every language. The rules for risky code a
 | Python | 12 | |
 | PHP | 7 | |
 | Go | 6 | |
+| Shell | 6 | `.sh`, `.bash`, `.zsh` and `.fish` files |
 | Dart/Flutter | 5 | Android manifest (2), iOS Info.plist (1), Firebase rules (3) |
 | Ruby | 3 | |
 | Java/Kotlin/Scala | 1 | |
-| Swift, shell, Rust, C/C++ and others | 0 | only checked for leftover secrets |
+| Swift, Rust, C/C++ and others | 0 | only checked for leftover secrets |
 | Dockerfile, YAML, GitHub Actions, .env | 2, 2, 2, 1 | |
 
 The report ends with the languages found and the frameworks detected (Next.js, Expo/React Native, Express, Hono, Supabase, Firebase, Flutter, Cloudflare Workers, Django, FastAPI, Flask, Rails and Laravel, from marker files such as `package.json` and `pubspec.yaml`, monorepo subfolders included). Cover languages without rules with a code review or the [agent skill](#using-it-from-an-agent). How some rules decide what to report is in [docs/rules.md](docs/rules.md).
