@@ -116,7 +116,96 @@ def _package_json_unpinned(sf: SourceFile) -> Iterable[tuple]:
                 yield lineno, f"{name}: {version!r}"
 
 
+# Spring Boot の Actuator を HTTP に全部出す設定。properties・環境変数・平らに書いた YAML のキー・JVM の引数（-D…）・
+# 一覧の添字（include[0]=*）
+_ACTUATOR_FLAT = re.compile(
+    r"(?i)(?:(?<![\w.])|(?<=-D))(?:management\.endpoints\.web\.exposure\.include|MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE)"
+    r"(?:\[\d+\])?[ \t]*[=:][ \t]*(.*)$"
+)
+# Kubernetes の env の書き方（- name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE の次の行の value: "*"）
+_K8S_ENV_NAME = re.compile(r"""^[ \t]*(?:-[ \t]+)?name[ \t]*:[ \t]*["']?MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE["']?[ \t]*$""")
+_K8S_ENV_VALUE = re.compile(r"^[ \t]*value[ \t]*:[ \t]*(.*)$")
+_ACTUATOR_PATH = "management.endpoints.web.exposure.include"
+# YAML の「キー: 値」の行（一覧の - の後ろも）と、一覧の項目の行
+_YAML_KEY_LINE = re.compile(r"^([ \t]*(?:-[ \t]+)?)([^\s#'\"\-:][^:#]*):(?:[ \t]+(.*))?$")
+_YAML_ITEM_LINE = re.compile(r"^[ \t]*-[ \t]+(.*)$")
+
+
+def _lists_star(value: str) -> bool:
+    """値（*・"*"・health,*・["health", "*"]・JVM の引数の * -Xmx512m）に * があるか。"""
+    value = re.sub(r"[ \t]+#.*$", "", value)
+    return any(item.strip("[]\"'") == "*" for item in re.split(r"[\s,]+", value))
+
+
+def _actuator_exposes_all(sf: SourceFile) -> Iterable[tuple]:
+    """management.endpoints.web.exposure.include に * を入れた行。YAML は入れ子と一覧（- "*"）も読む。
+
+    jmx の exposure（HTTP には出ない）や、ほかのキーの include: "*" は見ない。
+    """
+    if "exposure" not in sf.text.lower():
+        return
+    stack: list = []  # [(インデント, キー)]
+    include_indent = None  # 値を次の行の一覧に書いた include: のインデント
+    env_name = False  # 前の行が Kubernetes の env の name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+    for lineno, line in enumerate(sf.lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "!")):
+            continue
+        if env_name:
+            env_name = False
+            value = _K8S_ENV_VALUE.match(line)
+            if value:
+                if _lists_star(value.group(1)):
+                    yield lineno, line
+                continue
+        if _K8S_ENV_NAME.match(line):
+            env_name = True
+        if stripped == "---":  # YAML の次の文書
+            stack, include_indent = [], None
+            continue
+        flat = _ACTUATOR_FLAT.search(line)
+        if flat:
+            if _lists_star(flat.group(1)):
+                yield lineno, line
+            continue
+        if include_indent is not None:
+            item = _YAML_ITEM_LINE.match(line)
+            if item and len(line) - len(line.lstrip(" \t")) >= include_indent:
+                if _lists_star(item.group(1)):
+                    yield lineno, line
+                continue
+            include_indent = None
+        key = _YAML_KEY_LINE.match(line)
+        if not key:
+            continue
+        indent = len(key.group(1))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key.group(2).strip().lower()))
+        path = ".".join(name for _, name in stack)
+        if path != _ACTUATOR_PATH and not path.endswith("." + _ACTUATOR_PATH):
+            continue
+        value = key.group(3) or ""
+        if value.strip() and not value.lstrip().startswith("#"):
+            if _lists_star(value):
+                yield lineno, line
+        else:
+            include_indent = indent
+
+
 FILE_RULES = [
+    FileRule(
+        id="CFG-019",
+        title="Spring Boot の Actuator のエンドポイントを全部公開",
+        severity=Severity.MEDIUM,
+        category="config",
+        message="env・heapdump・configprops などから、環境変数・秘密の値・メモリの中身を読まれます。",
+        remediation="health・info など要るものだけを並べてください。ほかも出すなら、Spring Security で管理者だけに許してください。",
+        check=_actuator_exposes_all,
+        path_globs=("*.properties", "*.yml", "*.yaml", ".env*", "*.env"),
+        cwe="CWE-200",
+        test_severity=Severity.LOW,
+    ),
     FileRule(
         id="CFG-010",
         title="Dockerfile に USER 指定がありません",

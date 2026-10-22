@@ -31,6 +31,7 @@ LANGUAGE_EXTENSIONS = {
     "go": {".go"},
     "java": {".java", ".kt", ".kts", ".scala"},
     "csharp": {".cs"},
+    "rust": {".rs"},
     "dart": {".dart"},
     "shell": {".sh", ".bash", ".zsh", ".fish"},
     "sql": {".sql"},
@@ -46,7 +47,6 @@ LANGUAGE_FILENAMES = {
 # 言語のルールはまだ無いが、見つかったことはレポートに出す言語（秘密の置き忘れだけを確認している、と伝えるため）
 OTHER_LANGUAGE_EXTENSIONS = {
     "swift": {".swift"},
-    "rust": {".rs"},
     "c": {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp"},
     "objective-c": {".m", ".mm"},
     "elixir": {".ex", ".exs"},
@@ -628,6 +628,9 @@ class LineRule:
     # シェルのルール。shell_code を通した行（コメントと、echo などで表示するだけの文字列を消したもの）で照合する。
     # unless・require_line と証拠は元の行
     shell_view: bool = False
+    # 複数行のルールでも、証拠（と指紋）を当たり始めた行の全体にする（1 行のルールから複数行に変えても、指紋を変えないため）。
+    # 同じ行の 2 つ目からの当たりは出さない
+    whole_line_evidence: bool = False
 
     def __post_init__(self) -> None:
         self._pattern = re.compile(self.pattern)
@@ -653,6 +656,7 @@ class LineRule:
             severity = self.test_severity
 
         language = language_of(sf.name)
+        reported = set()
         for lineno, subject, _match in self._iter_matches(sf):
             # 複数行のルールは、当たった文字列ではなく、当たり始めた行でコメントかを見る
             line = sf.lines[lineno - 1] if self.multiline and lineno <= len(sf.lines) else subject
@@ -663,8 +667,12 @@ class LineRule:
                 continue
             if self._unless and self._unless.search(subject):
                 continue
+            if self.whole_line_evidence:
+                if lineno in reported:
+                    continue
+                reported.add(lineno)
 
-            evidence = _clip(redact(subject))
+            evidence = _clip(redact(line if self.whole_line_evidence else subject))
 
             yield Finding(
                 rule_id=self.id,
@@ -728,6 +736,7 @@ class FileRule:
     languages: tuple = ()
     path_globs: tuple = ()
     exclude_globs: tuple = ()
+    test_severity: Optional[Severity] = None
 
     def applies(self, sf: SourceFile) -> bool:
         if not language_matches(sf, self.languages):
@@ -739,11 +748,14 @@ class FileRule:
         return True
 
     def evaluate(self, sf: SourceFile) -> Iterable[Finding]:
+        severity = self.severity
+        if self.test_severity is not None and sf.is_test_path():
+            severity = self.test_severity
         for lineno, evidence in self.check(sf):
             yield Finding(
                 rule_id=self.id,
                 title=self.title,
-                severity=self.severity,
+                severity=severity,
                 category=self.category,
                 message=self.message,
                 remediation=self.remediation,

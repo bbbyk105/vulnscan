@@ -43,6 +43,28 @@
 
 **出さないもの**: 列の一覧・`WHERE`・`IN (?, ?)` を組み立てて値をバインドする書き方（Go の INJ-014 と同じ決まり）。外から受け取った列名・テーブル名・並べ方（`SET ${field}=?`・`ORDER BY ${sort}`）と、引用符も演算子も無い値の位置（`LIMIT ${n}`）も出さないので、レビューで読んでください。テストのファイルの指摘は「低」です。
 
+## INJ-018〜INJ-022: Ruby・PHP・Java/Kotlin・C#・Rust での SQL の組み立て
+
+INJ-009 と同じく、**値をつなぐ所だけを出します**。SQL の `'…'` の中と、`=`・`<`・`>`・`LIKE`・`ILIKE`・`GLOB`・`REGEXP` の直後です。連結は、`"…" + 式 + "…"` と続く文字列のどれかが値の位置で終わるものを見ます（間の式に引用符があるとその先は見ません）。
+
+**出さないもの**:
+
+- 列・テーブルの名前をつなぐ所（`"#{table}.id"`・`"FROM " + table`）。比べる演算子の直後でも、後ろに `.列名` が続くもの（`= #{table_name}.id`・`= {$wpdb->postmeta}.post_id`）は、テーブルで修飾した列名と見て出しません
+- 引用符も演算子も無い値の位置（`IN (#{ids})`・`LIMIT #{n}`）と、`SET` の右辺の列名（`#{col} = #{col} + 1`）。レビューで読んでください
+- マイグレーション（`db/migrate/`・`db/post_migrate/`・`database/migrations/`・`db/migration/`・`Migrations/` のフォルダ。`DataMigrations/` のように名前の最後が同じだけのフォルダは見る）
+
+テストのファイルの指摘は「低」です。
+
+| ルール | 見る呼び方 | つなぎ方 |
+|---|---|---|
+| INJ-018（Ruby） | `where`・`having`・`find_by`・`find_by_sql`・`joins`・`update_all`（受け手の無い `where(…)` も）、受け手のある `execute`・`exec_query`・`select_all` など（Capistrano・Chef の `execute "…"` は見ない）、`where.not` | `#{}`、`+`。配列で書いた条件 `where(["…"])` も見る。定数の `#{WORK_MEM}` と、全体を整数にした `#{params[:id].to_i}` は出さない。引用符を付ける `connection.quote`・配列を渡した `sanitize_sql([…])` は比べる演算子の直後だけ、引用符を付けない `quote_string` は SQL の `'…'` の中だけで出さない。`sanitize_sql_like`（`%` と `_` だけ）と文字列を渡した `sanitize_sql` は出す |
+| INJ-019（PHP） | `whereRaw`・`selectRaw`・`orderByRaw` など、`DB::select`・`DB::statement` など、`$wpdb->query`・`get_results` など（`$this->wpdb->` も）、`mysqli_query`・`pg_query`。PDO の `->query`・`exec`・`prepare` は、文字列が SQL の動詞で始まるものだけ | `"…$x"`・`"…{$x}"`、`.`。`(int)`・`intval`・`absint` を通したものは出さない。引用符を付ける `$pdo->quote`・`$this->db->escape` は比べる演算子の直後だけ、`esc_sql`・`mysqli_real_escape_string` は SQL の `'…'` の中だけで出さない |
+| INJ-020（Java/Kotlin/Scala） | `executeQuery`・`execute`・`prepareStatement`・`createQuery`・`createNativeQuery`・`rawQuery`・`execSQL`、JdbcTemplate の `query`・`update` など。Android の SQLiteDatabase の `update`・`delete`・`query` の where 句（`db.delete("users", "id = " + id, null)`。受け手が `db`・`mDb`・`database`・`writableDatabase`・`getWritableDatabase()` など、名前が db か database で終わるもの） | `+`、Kotlin の `$x`・`${x}`、Scala の `s"…$x"` |
+| INJ-021（C#） | EF Core の `FromSqlRaw`・`ExecuteSqlRaw`・`SqlQueryRaw`、Dapper の `Query`・`Execute` など（型引数 `<User>`・`<(int, string)>` と名前付きの引数 `sql:` も）、`new SqlCommand(…)` などのコマンド、`CommandText =`（オブジェクト初期化子の中も） | `$"…{x}"`、`+`、`string.Format` |
+| INJ-022（Rust） | sqlx の `query`・`query_as`（`::<_, (i64,)>` も）、diesel の `sql_query`、rusqlite・tokio-postgres の `execute`・`query` など | `format!` |
+
+INJ-020〜022 は、文字列が SQL の文（`SELECT`・`INSERT`・`UPDATE`・`DELETE`・`WITH`、JPQL の `FROM` など）で始まるものだけを出します（Android の where 句は除く）。SQL の文字列をその場に書いたものだけを見ます。先に変数に入れた SQL（`String sql = "…" + name;` のあとの `executeQuery(sql)`）と、Kotlin・C# の `"""…"""`、Rust の `r#"…"#` は見ません。
+
 ## シェルスクリプト
 
 `.sh`・`.bash`・`.zsh`・`.fish` のファイルを、1 行ずつ見ます。拡張子の無いスクリプト（`#!/bin/sh` で始まるものも）、Dockerfile の `RUN`、GitHub Actions の `run:` は見ません。行末の `\` で次の行に続けたコマンドはつなげて読みません（CFG-018 の `if` の条件だけはつなげて読みます）。fish の単一引用符の中の `\'` も扱いません。

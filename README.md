@@ -70,12 +70,12 @@ Exit codes for CI with `--fail-on`: `0` pass, `1` findings at or above the thres
 | Category | Examples |
 |---|---|
 | Secrets | AWS / Stripe / GitHub tokens, private keys, plain-text values in YAML and `.env`-style files, committed `.env` files (subfolders too), environment variables exposed to the client |
-| Injection | `eval`, `shell=True`, SQL built by string concatenation, `pickle` / `yaml.load`, PHP `unserialize` |
-| XSS | `dangerouslySetInnerHTML`, `innerHTML`, `v-html`, serving SVG directly |
+| Injection | `eval`, `shell=True`, SQL built by string concatenation, `pickle` / `yaml.load`, PHP `unserialize`, Java and .NET deserialization (`ObjectInputStream`, `BinaryFormatter`) |
+| XSS | `dangerouslySetInnerHTML`, `innerHTML`, `v-html`, Blade `{!! !!}`, serving SVG directly |
 | Crypto and randomness | MD5 / SHA1, AES-ECB, `Math.random` / `random` for tokens |
-| Authentication and authorization | JWT `alg: none`, `verify=False`, wildcard CORS, disabled CSRF |
-| Transport security | `rejectUnauthorized: false`, `InsecureSkipVerify`, `verify=False` |
-| Misconfiguration | `DEBUG=True`, secrets in a Dockerfile `ENV`, running as root, `privileged: true` |
+| Authentication and authorization | JWT `alg: none`, `verify=False`, wildcard CORS, disabled CSRF, mass assignment (Rails `permit!`, Laravel `$guarded = []`) |
+| Transport security | `rejectUnauthorized: false`, `InsecureSkipVerify`, `verify=False`, C# `ServerCertificateCustomValidationCallback`, Rust `danger_accept_invalid_certs` |
+| Misconfiguration | `DEBUG=True`, secrets in a Dockerfile `ENV`, running as root, `privileged: true`, mounting `docker.sock`, `network_mode: host`, exposing every Spring Boot Actuator endpoint, nginx `alias` |
 | CI/CD | script injection in GitHub Actions, unsafe checkouts in `pull_request_target` |
 | Mobile and Firebase | Dart certificate checks, cleartext traffic and tokens in SharedPreferences; Android `usesCleartextTraffic` and `debuggable`; iOS ATS exceptions; `if true` in Firestore / Storage rules |
 | Shell scripts | `curl … \| sh`, `eval "$@"`, `curl -k`, `StrictHostKeyChecking=no`, `chmod 777`, `rm -rf "$DIR/"*` when `$DIR` may be empty |
@@ -87,14 +87,16 @@ The 19 secret rules apply to files in every language. The rules for risky code a
 |---|---:|---|
 | JavaScript/TypeScript | 17 | |
 | Python | 12 | |
-| PHP | 7 | |
+| PHP | 10 | |
 | Go | 6 | |
 | Shell | 6 | `.sh`, `.bash`, `.zsh` and `.fish` files |
 | Dart/Flutter | 5 | Android manifest (2), iOS Info.plist (1), Firebase rules (3) |
-| Ruby | 3 | |
-| Java/Kotlin/Scala | 1 | |
-| Swift, Rust, C/C++ and others | 0 | only checked for leftover secrets |
-| Dockerfile, YAML, GitHub Actions, .env | 2, 2, 2, 1 | |
+| Ruby | 5 | |
+| C# | 4 | |
+| Java/Kotlin/Scala | 3 | Spring Boot settings (1) |
+| Rust | 2 | |
+| Swift, C/C++ and others | 0 | only checked for leftover secrets |
+| Dockerfile, YAML, GitHub Actions, .env, nginx | 2, 4, 2, 1, 1 | |
 
 The report ends with the languages found and the frameworks and services detected: web frameworks such as Next.js, Rails, Laravel, Spring Boot and Gin; platforms such as Supabase, Firebase and AWS; libraries such as Stripe and MCP; and Docker Compose, Kubernetes and Terraform. They are detected from marker files such as `package.json`, `go.mod` and `pubspec.yaml`, monorepo subfolders included. Cover languages without rules with a code review or the [agent skill](#using-it-from-an-agent). How some rules decide what to report is in [docs/rules.md](docs/rules.md).
 
@@ -245,7 +247,7 @@ jobs:
 - It never attacks a running app. Cover authorization logic and the actual configuration with code review and by checking the running app.
 - Binaries, files over 1.5 MB (`--max-file-size`) and the contents of lockfiles are not scanned.
 - Shell scripts are checked line by line. Scripts without a file extension, Dockerfile `RUN` lines and GitHub Actions `run:` steps are not checked. CFG-018 (`rm -rf "$DIR/"*`) ignores checks on `$DIR` made inside functions.
-- Details on what SEC-013 (hard-coded passwords), INJ-009 (SQL in JS) and the shell rules report, how `--deps` audits each lockfile, and how `.env` files are read: [docs/rules.md](docs/rules.md).
+- Details on what SEC-013 (hard-coded passwords), INJ-009 (SQL in JS), the SQL rules for other languages and the shell rules report, how `--deps` audits each lockfile, and how `.env` files are read: [docs/rules.md](docs/rules.md).
 
 ## Development
 
