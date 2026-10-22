@@ -93,7 +93,7 @@ vulnscan 0.3.0 — /path/to/your-app
 | Swift・Rust・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
 | Dockerfile・YAML・GitHub Actions・.env | 2・2・2・1 | |
 
-レポートの最後に、見つかった言語と、見分けたフレームワークを出します（Next.js・Expo/React Native・Express・Hono・Supabase・Firebase・Flutter・Cloudflare Workers・Django・FastAPI・Flask・Rails・Laravel。`package.json`・`pubspec.yaml` などの目印のファイルから。monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールがどこまで検出するかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
+レポートの最後に、見つかった言語と、見分けたフレームワーク・サービスを出します。Next.js・Rails・Laravel・Spring Boot・Gin などの Web のフレームワーク、Supabase・Firebase・AWS などの基盤、Stripe・MCP などのライブラリ、Docker Compose・Kubernetes・Terraform を、`package.json`・`go.mod`・`pubspec.yaml` などの目印のファイルから見分けます（monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールがどこまで検出するかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
 
 ## 言語を選ぶ
 
@@ -127,7 +127,7 @@ vulnscan 0.3.0 — /path/to/your-app
 [skills/vulnscan/SKILL.md](skills/vulnscan/SKILL.md) は、Claude Code などのエージェントに vulnscan を使わせるための手順書です。エージェントは:
 
 1. vulnscan を流し、指摘ごとにコードを読んで本物か誤検知かを分け、
-2. vulnscan が見ていない部分（言語のルールが無い部分と、認可・他人のデータ・SSRF など正規表現では見えない観点）を[チェックリスト](skills/vulnscan/references/checklists.md)に沿って読み、
+2. vulnscan が見ていない部分（言語のルールが無い部分と、認可・他人のデータ・SSRF など正規表現では見えない観点）を、見分けたフレームワーク・サービスごとの[チェックリスト](skills/vulnscan/references/checklists.md)に沿って読み、
 3. ファイルを変えずに報告します。ブランチや PR の変更だけを見るときは、変わったコードそのものも読みます。
 
 Claude Code に入れて（clone した vulnscan のフォルダで実行）、「vulnscan でこのリポジトリを見て」と頼みます。
