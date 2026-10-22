@@ -75,6 +75,7 @@ vulnscan 0.2.0 — /path/to/your-app
 | 設定ミス | `DEBUG=True`、Dockerfile の `ENV` に秘密情報、root 実行、`privileged: true` |
 | CI/CD | GitHub Actions のスクリプトインジェクション、`pull_request_target` の危険な checkout |
 | モバイル・Firebase | Dart の証明書の検証の無効化・平文の通信・SharedPreferences のトークン、Android の `usesCleartextTraffic`・`debuggable`、iOS の ATS の例外、Firestore / Storage のルールの `if true` |
+| シェルスクリプト | `curl … \| sh`、`eval "$@"`、`curl -k`、`StrictHostKeyChecking=no`、`chmod 777`、空になりうる変数での `rm -rf "$DIR/"*` |
 | 依存関係 | `npm` / `pnpm` / `yarn` / `pip-audit` / `composer` の監査、pub・Go・Cargo・Bundler・Poetry・uv などは `osv-scanner`（`--deps` 時） |
 
 秘密のルール（19）はどの言語のファイルにも効きます。危ない書き方のルールは言語ごとです。
@@ -85,10 +86,11 @@ vulnscan 0.2.0 — /path/to/your-app
 | Python | 12 | |
 | PHP | 7 | |
 | Go | 6 | |
+| シェル | 6 | `.sh`・`.bash`・`.zsh`・`.fish` のファイル |
 | Dart/Flutter | 5 | Android の manifest（2）・iOS の Info.plist（1）・Firebase のルール（3） |
 | Ruby | 3 | |
 | Java/Kotlin/Scala | 1 | |
-| Swift・シェル・Rust・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
+| Swift・Rust・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
 | Dockerfile・YAML・GitHub Actions・.env | 2・2・2・1 | |
 
 レポートの最後に、見つかった言語と、見分けたフレームワークを出します（Next.js・Expo/React Native・Express・Hono・Supabase・Firebase・Flutter・Cloudflare Workers・Django・FastAPI・Flask・Rails・Laravel。`package.json`・`pubspec.yaml` などの目印のファイルから。monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールが何を出して何を出さないかは [docs/rules.ja.md](docs/rules.ja.md) にあります。

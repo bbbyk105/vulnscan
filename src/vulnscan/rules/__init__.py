@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import code, config, deps, secrets
+from . import code, config, deps, secrets, shell
 from .base import FileRule, LineRule
 
 LINE_RULES = [*secrets.RULES, *code.RULES]
-FILE_RULES = list(config.FILE_RULES)
+FILE_RULES = [*config.FILE_RULES, *shell.FILE_RULES]
 
 _RULE_INDEX = {rule.id: rule for rule in [*LINE_RULES, *FILE_RULES]}
 

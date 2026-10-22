@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import Severity
-from .base import LineRule
+from .base import LineRule, shell_args
 
 # INJ-009 で sqlite3・better-sqlite3・Prisma の呼び方を見るときの、SQL の頭の動詞
 _SQL_START = r"(?:select|insert|update|delete|replace|with)\s"
@@ -37,6 +37,47 @@ _SQL_CONCAT_VALUE = (
 )
 # 呼び出しの名前と ( の間の、TypeScript の型引数（$queryRawUnsafe<User[]>(…)）
 _TS_TYPE_ARGS = r"\s*(?:<[^()]*?>)?\s*\("
+
+
+# シェルのルールの部品。どれも shell_code を通した行（コメントと、echo などで表示するだけの文字列を消したもの）に使う
+_SH_DOWNLOAD = r"\b(?:curl|wget)\b"
+# 名前の前後が語の続き（refresh・shasum・node_modules）でないもの。/bin/bash の bash も当たる
+_SH_SHELL = r"(?<![\w.-])(?:ba|z|da|k)?sh(?![\w.-])"
+_SH_INTERPRETER = r"(?<![\w.-])(?:python[0-9.]*|perl|ruby|node|php)(?![\w.-])"
+# sudo・doas のオプションの引数（-u root）は - で始まらないものだけ（-a -a … を分け方の組み合わせで読まない）
+_SH_SUDO = r"(?:(?:sudo|doas)\s+(?:-\S+\s+(?:[\w.][\w.-]*\s+)?)*)?"
+# パイプ（|| は除く）と、間に挟むフィルター（| gunzip | sh・| tr -d '\r' | bash・| tee x | bash）
+_SH_PIPE = r"\|(?!\|)&?\s*"
+_SH_FILTER = r"[^\s|;&]" + shell_args(r"(?:curl|wget)")
+# $(…) と `…`（eval `curl …`）
+_SH_SUBSTITUTION = r"(?:\$\(|`)\s*"
+# シェルの名前のあとの引数（bash -s stable < <(curl …)）。数を区切る（bash が並ぶ行で、位置ごとに行末まで読まない）
+_SH_SHELL_ARGS = r"(?:\s+[^\s|;&<>]+){0,10}"
+# ほかの人が書き込めるモード。数字は最後の桁に書き込み（2・3・6・7）があるもの（777・66・2777。1777 のような
+# sticky ビットつきは /tmp と同じ共有の置き場なので外す）。記号は o・a に + か = で w を付けるもの（a+w・u+x,o+w）。
+# 同じモードの中で o-w・a-w と外すもの（a+rw,o-w）は出さない。どの部分も重ならない形にして、長いモードでも 1 回で読む
+_SH_OCTAL_WW = r"0*[0246]?[0-7]{0,2}[2367]"
+_SH_SYMBOLIC_WW = (
+    r"(?!\S*?(?<![^\s,\"'])(?=[ug]*[oa])[ugoa]*-[rxXstugo]*w)"
+    r"(?:[ugoa]*[-+=][rwxXstugo]*,)*?(?=[ug]*[oa])[ugoa]*[+=](?=[rxXstugo]*w)[rwxXstugo]*"
+)
+_SH_MODE_WW = r"[\"']?(?:" + _SH_OCTAL_WW + r"|" + _SH_SYMBOLIC_WW + r")[\"']?(?=[\s,;&|)]|$)"
+# パイプの先の、sudo・パス・env（| sudo -E /bin/bash・| /usr/bin/env -i bash）
+_SH_LAUNCHER = _SH_SUDO + r"(?:(?:/[\w.-]+)*/)?(?:env\s+(?:-\S+\s+)*(?:\w+=[^\s;&|()]*\s+)*(?:(?:/[\w.-]+)*/)?)?"
+# 標準入力を実行するもの。シェルは、-c（引数の文字列を実行する）かスクリプトを渡したものを外す
+# （-s を付けたあとの語は、標準入力のスクリプトへの引数）。ほかは -c・-e・-r・スクリプトを渡したものを外す
+_SH_RUNS_STDIN = (
+    r"(?:" + _SH_SHELL + r"(?!(?:\s+-[A-Za-rt-z]+)*\s+(?:-[A-Za-z]*c|(?!\d*[<>&])[^\s\-;&|)<>]))"
+    r"|" + _SH_INTERPRETER + r"(?=\s*(?:-(?:\s|$)|$|[;&|)]|\d*[<>]))"
+    r"|source(?=\s*(?:-\s*)?(?:$|[;&|)]|\d*[<>])))"
+)
+# 手元の宛先。名前の続き（localhost.attacker.example）と、@ の前のユーザー名・パスワード
+# （localhost:pw@evil.example のつなぐ先は evil.example）は外す
+_SH_LOCAL_HOSTS = r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?![\w.@-])(?![^/\s\"'@]*@)"
+# TLS-010 で外す当たり: curl・wget のコマンド全体（引用符の中も）で、宛先がどれも手元（localhost など）で、
+# 変数・$(…)・`…` も渡していないもの（curl -k https://localhost:8443）。pip（信頼するホストは URL ではない）は外さない
+_SH_ONLY_LOCAL = r"^(?:curl|wget)\b(?=.*://" + _SH_LOCAL_HOSTS + r")(?!.*(?:://(?!" + _SH_LOCAL_HOSTS + r")|[$`]))"
+
 
 RULES = [
     # ---------------------------------------------------------------- injection
@@ -762,5 +803,108 @@ RULES = [
         message="タイムアウトが無いと、ゆっくり送り続ける接続で接続の枠を使い切られます（Slowloris）。",
         remediation="http.Server に ReadHeaderTimeout などを設定して ListenAndServe を呼んでください。",
         cwe="CWE-400",
+    ),
+    # -------------------------------------------------------------------- shell
+    LineRule(
+        id="INJ-016",
+        title="ダウンロードしたスクリプトをそのまま実行（curl | sh）",
+        severity=Severity.MEDIUM,
+        category="injection",
+        pattern=(
+            # curl … | sh・wget -qO- … | sudo bash -・curl … | python3 -・curl … | php・fish の | source。
+            # |&、間にフィルターを挟んだもの（| gunzip | sh・| sudo tee install.sh | bash）も
+            _SH_DOWNLOAD + shell_args(r"(?:curl|wget)") + _SH_PIPE
+            + r"(?:" + _SH_FILTER + _SH_PIPE + r")*?" + _SH_LAUNCHER + _SH_RUNS_STDIN
+            # bash <(curl …)・bash -s stable < <(curl …)・source <(curl …)・. <(curl …)
+            + r"|(?:" + _SH_SHELL + r"|" + _SH_INTERPRETER + r"|\bsource|(?<![\w./-])\.)" + _SH_SHELL_ARGS
+            + r"\s*<?\s*<\(\s*" + _SH_DOWNLOAD
+            # bash <<< "$(curl …)"
+            + r"|(?:" + _SH_SHELL + r"|" + _SH_INTERPRETER + r")" + _SH_SHELL_ARGS + r"\s*<<<\s*[\"']?"
+            + _SH_SUBSTITUTION + _SH_DOWNLOAD
+            # bash -c "$(curl …)"・bash -e -c "$(curl …)"・python3 -c "$(curl …)"・eval "$(curl …)"・eval `curl …`
+            + r"|(?:(?:" + _SH_SHELL + r"|" + _SH_INTERPRETER + r")(?:\s+-[A-Za-z]+){0,10}\s+-[A-Za-z]*[ce]"
+            + r"|(?<![\w-])eval)\s+[\"']?" + _SH_SUBSTITUTION + _SH_DOWNLOAD
+        ),
+        languages=("shell",),
+        shell_view=True,
+        message="取ってきた中身を確かめずに実行しています。配布元や途中の経路が乗っ取られると、そのまま任意のコードが動きます。",
+        remediation="版を固定して取り、sha256 などを確かめてから実行してください。パッケージマネージャで入れられるものは、そちらを使ってください。",
+        cwe="CWE-494",
+        owasp="A08:2021",
+    ),
+    LineRule(
+        id="INJ-017",
+        title="引数をそのまま eval・sh -c に渡しています",
+        severity=Severity.MEDIUM,
+        category="injection",
+        # eval "$@"・eval $1・bash -c "$1"・eval "$1=$2"・eval "$1=\"$2\""。名前を受け取って代入するとき、値を \$ で
+        # 渡すもの（eval "$1=\$value"）と、単一引用符の中（eval '$@'。値の中の ; や $(…) は読み直されない）は外す
+        pattern=r"(?:(?<![\w-])eval|" + _SH_SHELL + r"\s+-[A-Za-z]*c)\s+\"?\$(?:\{[1-9@*]\}|[1-9@*])(?!\w)(?!\+?=\\\$)",
+        languages=("shell",),
+        shell_view=True,
+        message="引数がもう一度シェルの文として読まれます。空白・引用符・$(…) を含む値でコマンドが変わり、外から渡した値で任意のコマンドが動きます。",
+        remediation="\"$@\" でそのまま実行してください（eval・sh -c を通さない）。",
+        cwe="CWE-78",
+        owasp="A03:2021",
+    ),
+    LineRule(
+        id="TLS-010",
+        title="コマンドで証明書の検証を無効化（curl -k など）",
+        severity=Severity.HIGH,
+        category="tls",
+        pattern=(
+            # -k は -sk・-fsSLk のようにまとめたものも。--max-time・--keepalive-time は当てない。
+            # 当たりはコマンドの終わりまで（宛先がどれも手元のものを、value_unless で外すため）
+            r"\bcurl\b" + shell_args("curl") + r"\s(?:-[A-Za-z]*k[A-Za-z]*|--insecure)(?=[\s\"';&|)]|$)"
+            + shell_args("curl")
+            + r"|\bwget\b" + shell_args("wget") + r"\s--no-check-certificate\b" + shell_args("wget")
+            + r"|\bpip3?\b" + shell_args("pip3?") + r"\s--trusted-host\b"
+            # git の設定の名前は大文字小文字を区別しない。URL ごとの http.<url>.sslVerify も（URL は次の http. の手前まで）。
+            # 真偽は 0・no・off も
+            r"|(?i:\bhttp\.(?:(?:(?!\bhttp\.)\S)*\.)?sslverify)(?:\s*=\s*|\s+)[\"']?(?i:false|no|off|0)\b"
+            # git は値に関係なく、この変数があれば検証しない
+            r"|\bGIT_SSL_NO_VERIFY="
+            r"|\b(?:npm|yarn|pnpm)\s+(?:config\s+)?set\s+strict-ssl(?:\s*=\s*|\s+)[\"']?false\b"
+        ),
+        languages=("shell",),
+        shell_view=True,
+        value_unless=_SH_ONLY_LOCAL,
+        test_severity=Severity.LOW,
+        message="証明書を確かめないので、途中の経路で通信を読まれ、書き換えられます。",
+        remediation="検証を有効に戻してください。自己署名の証明書なら、curl は --cacert、git は http.sslCAInfo でその証明書を渡してください。",
+        cwe="CWE-295",
+    ),
+    LineRule(
+        id="TLS-011",
+        title="SSH のホスト鍵の確認を無効化（StrictHostKeyChecking=no）",
+        severity=Severity.MEDIUM,
+        category="tls",
+        # -oStrictHostKeyChecking=no のように -o に続けて書いたものも。OpenSSH は false も off と同じに読む
+        pattern=r"(?i)(?:\b|(?<=-o))StrictHostKeyChecking(?:\s*=\s*|\s+)[\"']?(?:no|off|false)\b",
+        languages=("shell",),
+        shell_view=True,
+        message="接続先が本物か確かめないので、なりすました相手に、実行するコマンドや送るファイル、転送した認証情報が渡ります。",
+        remediation="接続先のホスト鍵を known_hosts に入れてください（ssh-keyscan の結果を指紋で確かめてから）。"
+        "初めての接続だけ受け入れるなら StrictHostKeyChecking=accept-new にしてください。",
+        cwe="CWE-322",
+    ),
+    LineRule(
+        id="CFG-017",
+        title="誰でも書き込める権限（chmod 777・o+w・umask 000）",
+        severity=Severity.MEDIUM,
+        category="config",
+        pattern=(
+            r"\bchmod\s+(?:-[A-Za-z]+\s+|--[\w-]*\s+)*" + _SH_MODE_WW
+            # 作るときに権限を付けるもの（mkdir -m 777・install -m 0777・mkdir --mode=777）
+            + r"|(?:^|[;&|({]|\b(?:sudo|doas|then|do|else|exec)\s)\s*(?:mkdir|install)\b"
+            + shell_args(r"(?:mkdir|install)") + r"\s(?:-m\s*|--mode=)" + _SH_MODE_WW
+            + r"|\bumask\s+0*[0-7]?[0-7]?[0145](?=[\s;&|)]|$)"
+        ),
+        languages=("shell",),
+        shell_view=True,
+        message="同じマシンのほかのユーザーやプロセスが書き換えられます。スクリプトや設定なら、書き換えた中身が実行されます。",
+        remediation="必要な人だけに書き込みを許してください（ファイルは 644・600、フォルダは 755・700 など）。"
+        "共有するならグループを分けてください。",
+        cwe="CWE-732",
     ),
 ]
