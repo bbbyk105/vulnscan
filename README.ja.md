@@ -67,12 +67,12 @@ vulnscan 0.3.0 — /path/to/your-app
 | カテゴリ | 例 |
 |---|---|
 | 秘密情報の露出 | AWS / Stripe / GitHub トークン、秘密鍵、YAML・`.env` 形式に平文で書いた値、`.env` のコミット（サブフォルダも）、クライアントに露出する環境変数 |
-| インジェクション | `eval`、`shell=True`、SQL の文字列連結、`pickle` / `yaml.load`、PHP の `unserialize` |
-| XSS | `dangerouslySetInnerHTML`、`innerHTML`、`v-html`、SVG の直接配信 |
+| インジェクション | `eval`、`shell=True`、SQL の文字列連結、`pickle` / `yaml.load`、PHP の `unserialize`、Java・.NET のデシリアライズ（`ObjectInputStream`・`BinaryFormatter`） |
+| XSS | `dangerouslySetInnerHTML`、`innerHTML`、`v-html`、Blade の `{!! !!}`、SVG の直接配信 |
 | 暗号・乱数 | MD5 / SHA1、AES-ECB、トークン生成への `Math.random` / `random` |
-| 認証・認可 | JWT の `alg: none`、`verify=False`、CORS ワイルドカード、CSRF 無効化 |
-| 通信の安全性 | `rejectUnauthorized: false`、`InsecureSkipVerify`、`verify=False` |
-| 設定ミス | `DEBUG=True`、Dockerfile の `ENV` に秘密情報、root 実行、`privileged: true` |
+| 認証・認可 | JWT の `alg: none`、`verify=False`、CORS ワイルドカード、CSRF 無効化、一括代入（Rails の `permit!`・Laravel の `$guarded = []`） |
+| 通信の安全性 | `rejectUnauthorized: false`、`InsecureSkipVerify`、`verify=False`、C# の `ServerCertificateCustomValidationCallback`、Rust の `danger_accept_invalid_certs` |
+| 設定ミス | `DEBUG=True`、Dockerfile の `ENV` に秘密情報、root 実行、`privileged: true`、`docker.sock` のマウント、`network_mode: host`、Spring Boot の Actuator の全公開、nginx の `alias` |
 | CI/CD | GitHub Actions のスクリプトインジェクション、`pull_request_target` の危険な checkout |
 | モバイル・Firebase | Dart の証明書の検証の無効化・平文の通信・SharedPreferences のトークン、Android の `usesCleartextTraffic`・`debuggable`、iOS の ATS の例外、Firestore / Storage のルールの `if true` |
 | シェルスクリプト | `curl … \| sh`、`eval "$@"`、`curl -k`、`StrictHostKeyChecking=no`、`chmod 777`、`$DIR` が空のおそれがある `rm -rf "$DIR/"*` |
@@ -84,14 +84,16 @@ vulnscan 0.3.0 — /path/to/your-app
 |---|---:|---|
 | JavaScript/TypeScript | 17 | |
 | Python | 12 | |
-| PHP | 7 | |
+| PHP | 10 | |
 | Go | 6 | |
 | シェル | 6 | `.sh`・`.bash`・`.zsh`・`.fish` のファイル |
 | Dart/Flutter | 5 | Android の manifest（2）・iOS の Info.plist（1）・Firebase のルール（3） |
-| Ruby | 3 | |
-| Java/Kotlin/Scala | 1 | |
-| Swift・Rust・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
-| Dockerfile・YAML・GitHub Actions・.env | 2・2・2・1 | |
+| Ruby | 5 | |
+| C# | 4 | |
+| Java/Kotlin/Scala | 3 | Spring Boot の設定（1） |
+| Rust | 2 | |
+| Swift・C/C++ など | 0 | 秘密の置き忘れだけを確認 |
+| Dockerfile・YAML・GitHub Actions・.env・nginx | 2・4・2・1・1 | |
 
 レポートの最後に、見つかった言語と、見分けたフレームワーク・サービスを出します。Next.js・Rails・Laravel・Spring Boot・Gin などの Web のフレームワーク、Supabase・Firebase・AWS などの基盤、Stripe・MCP などのライブラリ、Docker Compose・Kubernetes・Terraform を、`package.json`・`go.mod`・`pubspec.yaml` などの目印のファイルから見分けます（monorepo のサブフォルダも見ます）。ルールの無い言語は、コードレビューか[エージェント](#エージェントから使う)で補ってください。いくつかのルールがどこまで検出するかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
 
@@ -242,7 +244,7 @@ jobs:
 - 動いているアプリへの攻撃はしません。認可のロジックの穴や設定の実態は、コードレビューと実際の動作の確認で補ってください。
 - バイナリ、1.5MB を超えるファイル（`--max-file-size`）、lockfile の中身は走査しません。
 - シェルスクリプトは 1 行ずつ検査します。拡張子の無いスクリプト、Dockerfile の `RUN`、GitHub Actions の `run:` は検査しません。CFG-018（`rm -rf "$DIR/"*`）は、関数の中で `$DIR` を確認していても考慮しません。
-- SEC-013（ハードコードしたパスワード）・INJ-009（JS の SQL）・シェルスクリプトのルールがどこまで検出するか、`--deps` が lockfile ごとに何で監査するか、`.env` をどう読むかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
+- SEC-013（ハードコードしたパスワード）・INJ-009（JS の SQL）・ほかの言語の SQL・シェルスクリプトのルールがどこまで検出するか、`--deps` が lockfile ごとに何で監査するか、`.env` をどう読むかは [docs/rules.ja.md](docs/rules.ja.md) にあります。
 
 ## 開発
 

@@ -38,6 +38,113 @@ _SQL_CONCAT_VALUE = (
 # 呼び出しの名前と ( の間の、TypeScript の型引数（$queryRawUnsafe<User[]>(…)）
 _TS_TYPE_ARGS = r"\s*(?:<[^()]*?>)?\s*\("
 
+# Ruby・PHP・Java/Kotlin・C#・Rust の SQL のルールの部品。INJ-009・INJ-014 と同じく、値をつなぐ所だけを見る:
+# SQL の '…' の中と、比べる演算子の直後。列・テーブルの名前をつなぐ所（"#{table}.id"・"FROM " + table）は見ない
+_SQL_COMPARE_ANY_CASE = r"(?:[=<>]|\b(?i:i?like|glob|regexp)\b)\s*"
+# "…" の中身。閉じた '…' は組で読み飛ばし、開いたままの ' だけを値の中と見る（'…' の中身の " も同じ）
+_DQ_SQL_BODY = r"(?:[^\"'\\\n]|\\.|'[^'\"\n]*')*?"
+_SQ_SQL_BODY = r"(?:[^'\"\\\n]|\\.|\"[^'\"\n]*\")*?"
+
+
+# 比べる演算子の直後の埋め込みのあとに .列名 が続くものは、テーブルで修飾した列名（= #{table}.id）
+_NOT_QUALIFIED = r"(?!\.[A-Za-z_])"
+
+
+def _sql_hole(hole: str, value_hole: str) -> str:
+    """"…" の中の、値の位置にある埋め込み（Ruby の #{}・PHP の $x・Kotlin の ${}・C# と Rust の {}）。
+
+    hole は SQL の '…' の中の埋め込みの始まり。value_hole は比べる演算子の直後の埋め込みの全体で、
+    後ろに _NOT_QUALIFIED を付けて、テーブルで修飾した列名を外す。
+    """
+    return r"\"" + _DQ_SQL_BODY + r"(?:'[^'\"\n]*" + hole + r"|" + _SQL_COMPARE_ANY_CASE + value_hole + r")"
+
+
+# 埋め込みの中身は 200 文字まで読む（区切らないと、閉じない = { が並ぶ行で、埋め込みごとに行末まで読む）
+_HOLE_BODY = r"[^}\n]{0,200}\}"
+
+
+def _sql_brace_hole(start: str = r"\{(?!\{)") -> str:
+    """C#・Rust の {…}（{{ は文字の {）と、string.Format の {0}。"""
+    return _sql_hole(start, start + _HOLE_BODY + _NOT_QUALIFIED)
+
+
+def _sql_concat(op: str, op_char: str, quoted_safe: str = "", value_safe: str = "") -> str:
+    """"…" と '…' を op（+ か PHP の .）でつなぐもので、どれかの文字列が値の位置で終わるもの。
+
+    "… = '" + name も、"SELECT * FROM " + table + " WHERE id = " + id も見る（INJ-009 の連結と同じ読み方）。
+    間の式に引用符があると、その先は見ない。式は空白で始めない（演算子の後ろの空白と取り合わないため）。
+    quoted_safe・value_safe は、SQL の '…' の中・比べる演算子の直後につないでも安全な式の始まり（エスケープ・数への変換）。
+    引用符を自分で付ける関数（quote）は '…' の中では引用符が二重になって値が外に出るので、value_safe にだけ入れる。
+    """
+    literal = r"(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*')"
+    expression = r"[^\s\"'`;" + op_char + r"][^\"'`;" + op_char + r"]*"
+    quoted_guard = r"(?!\s*(?:" + quoted_safe + r"))" if quoted_safe else ""
+    value_guard = r"(?!\s*(?:" + value_safe + r"))" if value_safe else ""
+    return (
+        r"(?:" + literal + r"\s*" + op + r"\s*(?:" + expression + op + r"\s*)?)*?"
+        # 前の文字列で開いた ' を閉じて始まる文字列（"…a = '" . esc_sql($a) . "' AND b = '" . $b）も、閉じる引用符を読み飛ばして見る
+        r"(?:\"'?" + _DQ_SQL_BODY + r"(?:'[^'\"\n]*\"\s*" + op + quoted_guard
+        + r"|" + _SQL_COMPARE_ANY_CASE + r"\"\s*" + op + value_guard + r")"
+        r"|'\"?" + _SQ_SQL_BODY + r"(?:\"[^'\"\n]*'\s*" + op + quoted_guard
+        + r"|" + _SQL_COMPARE_ANY_CASE + r"'\s*" + op + value_guard + r"))"
+    )
+
+
+# 引数の文字列が SQL の文の始まりか（INJ-020〜022。メソッド名の update( や、英文の中の from では当てない）。
+# FROM は JPQL・HQL の始まり
+_SQL_STATEMENT = r"\s*(?i:select|insert|update|delete|replace|merge|with|from)\s"
+# C# の型引数（<User>・<(int Id, string Name)>・<Dictionary<string, int>>）
+_GENERIC_ARGS = r"<[^<>\n]*(?:<[^<>\n]*>[^<>\n]*)*>"
+_RB_SQL_CALLS = (
+    r"where|rewhere|having|find_by!?|find_by_sql|count_by_sql|joins|update_all|execute|exec_query"
+    r"|exec_update|exec_delete|select_all|select_one|select_value|select_values|select_rows"
+)
+# 受け手なしでも見る名前（モデルの scope・クラスメソッドの中の where(...)）。execute などは Capistrano・Chef の
+# シェルを実行する DSL と同じ名前なので、受け手のあるもの（connection.execute）だけを見る
+_RB_BARE_SQL_CALLS = r"where|rewhere|having|find_by!?|find_by_sql|count_by_sql|joins|update_all"
+# Ruby の #{…} で、値として見ないもの: 定数（#{WORK_MEM}）と、全体を整数にしたもの（#{params[:id].to_i}。|| などで
+# ほかの値とつないだものは見る）。引用符を付けてエスケープする connection.quote・配列で渡した sanitize_sql
+# （sanitize_sql(["… ?", x])。文字列を渡すとそのまま返す）は、比べる演算子の直後だけで外す（'…' の中では引用符が二重になる）。
+# 引用符を付けない quote_string は、SQL の '…' の中だけで外す。sanitize_sql_like（% と _ だけ）は見る
+_RB_SAFE = r"[A-Z][A-Z0-9_]*\}|[^}\s|&?]{0,100}?\.to_[ifr]\s*\}"
+_RB_HOLE = r"#\{(?!" + _RB_SAFE + r"|[^}\n]{0,100}?\bquote_string\s*\()"
+_RB_VALUE_HOLE = (
+    r"#\{(?!" + _RB_SAFE + r"|[^}\n]{0,100}?(?:\bquote\s*\(|\bsanitize_sql(?:_array|_for_conditions)?\s*\(\s*\[))"
+    + _HOLE_BODY + _NOT_QUALIFIED
+)
+# PHP の "…$x"・"…{$x}"・"…$obj->prop"・"…$arr[0]"
+_PHP_HOLE = r"\{?\$[A-Za-z_]"
+_PHP_VALUE_HOLE = (
+    r"(?:\{\$" + _HOLE_BODY + r"|\$[A-Za-z_]\w*\b(?:->[A-Za-z_]\w*\b|\[[^\]\n]{0,100}\])?)(?!\.[A-Za-z_]|->|\[)"
+)
+# PHP の連結で、つないでも安全な値: 数への変換はどこでも。引用符を付けてエスケープするもの（PDO の quote・DB::getPdo()->quote・
+# CodeIgniter の $this->db->escape）は比べる演算子の直後だけ、引用符を付けないエスケープ（esc_sql・real_escape_string）は '…' の中だけ
+_PHP_CAST = r"\(\s*(?:int|integer|float|double|bool)\s*\)|(?:intval|floatval|boolval|absint)\s*\("
+_PHP_VALUE_SAFE = _PHP_CAST + r"|(?:\$\w+|\w+(?:::\w+)?\s*\(\s*\))(?:->\w+(?:\s*\(\s*\))?)*->(?:quote|escape)\s*\("
+_PHP_QUOTED_SAFE = (
+    _PHP_CAST + r"|(?:esc_sql|mysqli_real_escape_string|pg_escape_string|addslashes)\s*\("
+    r"|\$\w+(?:->\w+)*->(?:real_escape_string|escape_string)\s*\("
+)
+# Kotlin の "…$x"・"…${x}"
+_KT_HOLE = r"\$\{?[A-Za-z_]"
+_KT_VALUE_HOLE = r"\$(?:\{" + _HOLE_BODY + r"|[A-Za-z_]\w*\b)" + _NOT_QUALIFIED
+# マイグレーション（Rails・Laravel・Flyway・EF Core）。開発者が流すもので、つなぐのはテーブル名や定数（外の値は入らない）
+_MIGRATIONS = tuple(
+    glob
+    for folder in ("db/migrate", "db/post_migrate", "database/migrations", "db/migration", "Migrations")
+    for glob in (folder + "/*", "*/" + folder + "/*")
+)
+
+# Blade の {!! !!} で、外の値が入らない形: CSRF・メソッドの隠しフィールド、ページ送り（$books->links()）、
+# 置き換えの無い翻訳の文（置き換えの値はエスケープされないので、引数が 2 つのものは見る）
+_BLADE_SAFE = (
+    r"csrf_field\s*\(\s*\)|method_field\s*\([^()\n]*\)"
+    # ページ送りの links()（$users->withQueryString()->links()・->appends(request()->query())->links() も）。
+    # render() は Markdown などを HTML にするものにも使う名前なので外さない
+    r"|\$\w+(?:->\w+\s*\((?:[^()\n]|\([^()\n]*\))*\))*->links\s*\([^()\n]*\)"
+    r"|(?:trans|__)\s*\(\s*(?:'[^'\n]*'|\"[^\"\n]*\")\s*\)"
+)
+
 
 # シェルのルールの部品。どれも shell_code を通した行（コメントと、echo などで表示するだけの文字列を消したもの）に使う
 _SH_DOWNLOAD = r"\b(?:curl|wget)\b"
@@ -490,9 +597,29 @@ RULES = [
         title="CSRF 保護の無効化",
         severity=Severity.MEDIUM,
         category="auth",
-        pattern=r"\bcsrf\s*(?::\s*false|_exempt\b)|@csrf_exempt",
+        pattern=(
+            r"\bcsrf\s*(?::\s*false|_exempt\b"
+            # Spring Security: csrf().disable()・csrf(AbstractHttpConfigurer::disable)・csrf(c -> c.disable())・
+            # csrf(c -> { c.disable(); })・Kotlin の csrf { disable() }・csrf { it.disable() }・csrf { c -> c.disable() }
+            r"|\(\s*\)\s*\.\s*disable\b"
+            r"|\(\s*(?:[\w.]*::disable\b|\(?\w+\)?\s*->\s*(?:\w+\s*\.\s*disable\s*\(|\{\s*\w+\s*\.\s*disable\s*\())"
+            r"|\{\s*(?:(?:\w+\s*->\s*)?\w+\s*\.\s*)?disable\s*\(\s*\)\s*\})|@csrf_exempt"
+            # Rails
+            # ほかの名前と並べたもの（skip_before_action :authenticate_user!, :verify_authenticity_token）と、Rails 5 より前の
+            # skip_before_filter も
+            r"|\bskip_before_(?:action|filter)(?:\s*\(\s*|\s+)(?::\w+[!?]?\s*,\s*)*:verify_authenticity_token\b"
+            r"|\bskip_forgery_protection\b"
+            r"|\ballow_forgery_protection\s*=\s*false\b"
+        ),
+        # Kotlin の csrf {・disable()・} は複数の行に分けて書く。証拠は行全体のまま（1 行で読んでいた前の版と同じ指紋にする）
+        multiline=True,
+        whole_line_evidence=True,
+        # Rails の generator が作る test.rb は、はじめから allow_forgery_protection = false。文書の中の例は設定ではない
+        exclude_globs=("*config/environments/test.rb", "*.md", "*.mdx", "*.markdown", "*.rst", "*.adoc", "*.txt"),
+        test_severity=Severity.LOW,
         message="CSRF 保護が無効になっており、外部サイトから状態変更を実行される可能性があります。",
-        remediation="CSRF トークン検証を有効にしてください。",
+        remediation="CSRF トークン検証を有効にしてください。Cookie のセッションを使わない API と、"
+        "署名を確かめる Webhook だけなら、無効のままで構いません。",
         cwe="CWE-352",
     ),
     # ------------------------------------------------------------------ config
@@ -803,6 +930,283 @@ RULES = [
         message="タイムアウトが無いと、ゆっくり送り続ける接続で接続の枠を使い切られます（Slowloris）。",
         remediation="http.Server に ReadHeaderTimeout などを設定して ListenAndServe を呼んでください。",
         cwe="CWE-400",
+    ),
+    # --------------------------------------------------------------------- ruby
+    LineRule(
+        id="INJ-018",
+        title="Rails で SQL に値を #{} や連結で埋め込んでいます",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            # 受け手なし（モデルの scope・クラスメソッドの中の where(...)）も見る。not は where.not だけ
+            # 配列で書いた条件（where(["name = '#{x}'"])）も
+            r"(?:\.(?:not|" + _RB_SQL_CALLS + r")|(?<![\w.:@$])(?:" + _RB_BARE_SQL_CALLS + r"))(?:\s*\(\s*|\s+)(?:\[\s*)?"
+            r"(?:" + _sql_hole(_RB_HOLE, _RB_VALUE_HOLE) + r"|" + _sql_concat(r"\+", "+") + r")"
+        ),
+        languages=("ruby",),
+        exclude_globs=_MIGRATIONS,
+        message="値を SQL の文字列に直接埋め込むと SQL インジェクションになります。",
+        remediation='where("name = ?", name) のようにプレースホルダで渡すか、where(name: name) のようにハッシュで渡してください。',
+        cwe="CWE-89",
+        owasp="A03:2021",
+        test_severity=Severity.LOW,
+    ),
+    LineRule(
+        id="AUTH-009",
+        title="Rails の permit! で送られた値を全部許可",
+        severity=Severity.MEDIUM,
+        category="auth",
+        pattern=r"\.permit!(?!=)",
+        languages=("ruby",),
+        test_severity=Severity.LOW,
+        message="送られた値を全部受け取るので、role・admin・user_id なども書き換えられます（一括代入）。",
+        remediation="permit(:name, :email) のように、受け取る項目を並べてください。",
+        cwe="CWE-915",
+    ),
+    # ---------------------------------------------------------------------- php
+    LineRule(
+        id="INJ-019",
+        title="PHP で SQL に値を埋め込み・連結しています",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            r"(?:(?:\b(?:whereRaw|orWhereRaw|havingRaw|orHavingRaw|selectRaw|orderByRaw|groupByRaw)"
+            r"|\bDB::(?:select|selectOne|scalar|statement|unprepared|insert|update|delete|raw)"
+            r"|(?:\$|->)wpdb->(?:query|get_results|get_row|get_var|get_col|prepare)"
+            # PDO・mysqli のメソッドは、ほかのクラスの query（$request->query('page')）と分けるため、文字列が SQL の動詞で始まるものだけ
+            r"|->(?:query|exec|prepare)(?=\s*\(\s*[\"']" + _SQL_STATEMENT + r"))\s*\("
+            # 1 つ目の引数の接続（$conn・$this->db）。pg_query は接続を省ける
+            r"|\b(?:mysqli_(?:query|real_query|multi_query)|pg_query)\s*\(\s*(?:\$\w+(?:->\w+)*\s*,)?)\s*"
+            r"(?:" + _sql_hole(_PHP_HOLE, _PHP_VALUE_HOLE)
+            + r"|" + _sql_concat(r"\.", ".", _PHP_QUOTED_SAFE, _PHP_VALUE_SAFE) + r")"
+        ),
+        languages=("php",),
+        exclude_globs=_MIGRATIONS,
+        message="値を SQL の文字列に直接埋め込むと SQL インジェクションになります。",
+        remediation="? のプレースホルダとバインドする値（whereRaw('price > ?', [$min])、PDO の prepare と execute）で渡してください。"
+        "WordPress は $wpdb->prepare を使ってください。",
+        cwe="CWE-89",
+        owasp="A03:2021",
+        test_severity=Severity.LOW,
+    ),
+    LineRule(
+        id="AUTH-010",
+        title="Laravel のモデルで一括代入の保護を外しています",
+        severity=Severity.LOW,
+        category="auth",
+        pattern=r"\$guarded\s*=\s*(?:\[\s*\]|array\s*\(\s*\))|\b(?:Model|Eloquent)::unguard\s*\(",
+        languages=("php",),
+        # seeder・factory はテストのデータを入れるだけ
+        exclude_globs=("database/*", "*/database/*"),
+        message="$request->all() を create・update・fill に渡すと、role・is_admin・user_id なども書き換えられます。",
+        remediation="$fillable で受け取る列を決めるか、$request->validated()・only() で選んだ値だけを渡してください。",
+        cwe="CWE-915",
+    ),
+    LineRule(
+        id="XSS-007",
+        title="Blade の {!! !!} でエスケープせずに出力",
+        severity=Severity.MEDIUM,
+        category="xss",
+        pattern=r"\{!!(?!\s*(?:" + _BLADE_SAFE + r")\s*!!\})"
+        # e()・htmlspecialchars で先にエスケープしたもの（nl2br(e($text)) も）。後ろに . や ? で続けたもの（e($a) . $b）は見る
+        r"(?!\s*(?:nl2br\s*\(\s*)?(?:e|htmlspecialchars|htmlentities)\s*\((?![^!\n]*\)\s*[.?])[^!\n]*!!\})",
+        languages=("php",),
+        path_globs=("*.blade.php",),
+        message="{!! !!} は HTML をエスケープしないので、値に入ったスクリプトがそのまま動きます。",
+        remediation="{{ }} で出してください。HTML を出すなら、サニタイズ（HTMLPurifier など）した値だけにしてください。",
+        cwe="CWE-79",
+    ),
+    # ------------------------------------------------------------- java / kotlin
+    LineRule(
+        id="INJ-020",
+        title="Java / Kotlin で SQL に値を連結・埋め込みしています",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            r"(?:\b(?:executeQuery|executeUpdate|executeLargeUpdate|execute|addBatch|prepareStatement|prepareCall"
+            r"|createQuery|createNativeQuery|createSQLQuery|rawQuery|execSQL|query|queryForObject|queryForList"
+            r"|queryForMap|queryForRowSet|queryForStream|update|batchUpdate)\s*\(\s*(?=s?[\"']" + _SQL_STATEMENT + r")"
+            # Android の SQLiteDatabase の where 句（db.update(TABLE, values, "id = " + id, null)・db.delete("users", "id = " + id, null)）。
+            # 受け手が db・mDb・database・writableDatabase・getWritableDatabase() のものだけ（progress.update("import", "count = " + n) は見ない）
+            r"|(?:\b\w*(?:[dD]b|[dD]atabase)|\bget(?:Writable|Readable)Database\s*\(\s*\))\s*\.\s*(?:update|delete|query)\s*\(\s*"
+            r"(?:\"[\w.]+\"|[\w.]+)\s*,\s*(?:(?:new\s+String\s*\[\s*\]\s*)?(?:\{[^{}\n]*\}|[\w.]+(?:\([^()\n]*\))?)\s*,\s*)?)"
+            # Kotlin の文字列テンプレート（"… = '$email'"・"… = ${user.id}"）と、Scala の s"…$id" も見る
+            r"(?:" + _sql_concat(r"\+", "+") + r"|s?" + _sql_hole(_KT_HOLE, _KT_VALUE_HOLE) + r")"
+        ),
+        languages=("java",),
+        exclude_globs=_MIGRATIONS,
+        message="値を SQL の文字列に直接つなぐと SQL インジェクションになります。",
+        remediation="PreparedStatement の ? と setString など、JPA の :name と setParameter、JdbcTemplate の引数で渡してください。",
+        cwe="CWE-89",
+        owasp="A03:2021",
+        test_severity=Severity.LOW,
+    ),
+    LineRule(
+        id="INJ-023",
+        title="Java / Kotlin の ObjectInputStream・XMLDecoder でのデシリアライズ",
+        severity=Severity.MEDIUM,
+        category="injection",
+        # 完全修飾名（java.io.ObjectInputStream(…)）も見る。無名の継承（new ObjectInputStream(in) { … }・
+        # Kotlin の object : ObjectInputStream(input) { … }）もストリームを作る所なので見る
+        # （resolveClass を上書きしても、ClassLoader を選ぶだけで読むクラスを絞らないことが多い）
+        pattern=r"(?:\bnew\s+|(?<![\w.$]))(?:java\.(?:io|beans)\.)?(?:ObjectInputStream|XMLDecoder)\s*\(",
+        languages=("java",),
+        # ObjectInputStream を継いだクラスの宣言（Kotlin の class X(…) : ObjectInputStream(…) {。主コンストラクタを複数の行に
+        # 書いた ) : ObjectInputStream(…) と、次の行に分けた ObjectInputStream(input) も）
+        unless=r"\bclass\s+\w+[^{\n]*:\s*(?:java\.io\.)?ObjectInputStream\s*\("
+        r"|^\s*\)\s*:\s*(?:java\.io\.)?ObjectInputStream\s*\("
+        r"|^\s*(?:java\.io\.)?ObjectInputStream\s*\([^()\n]*\)\s*(?:\{|$)",
+        message="信頼できないデータを読むと、クラスパスにあるクラスの組み合わせで任意のコードを実行されます。",
+        remediation="JSON などの形式に置き換えてください。読むなら ObjectInputFilter（JEP 290）で許すクラスを絞ってください。",
+        cwe="CWE-502",
+    ),
+    # ----------------------------------------------------------------------- c#
+    LineRule(
+        id="INJ-021",
+        title="C# で SQL に値を埋め込み・連結しています",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            # EF Core の *Raw と Dapper（型引数 <User> も）・ADO.NET のコマンド
+            r"(?:(?:\b(?:FromSqlRaw|ExecuteSqlRaw(?:Async)?|SqlQueryRaw)"
+            r"|\.(?:Query|QueryAsync|QueryFirst\w*|QuerySingle\w*|QueryMultiple\w*|Execute|ExecuteAsync"
+            r"|ExecuteScalar\w*|ExecuteReader\w*))\s*(?:" + _GENERIC_ARGS + r")?\s*\("
+            r"|\bnew\s+(?:\w+\.)*(?:Sql|Npgsql|MySql|Sqlite|SQLite|OleDb|Odbc|Oracle)Command\s*\("
+            # cmd.CommandText = … と、オブジェクト初期化子の { CommandText = … }
+            r"|\bCommandText\s*=(?!=))\s*"
+            # 名前付きの引数（sql: "…"）
+            r"(?:\w+\s*:\s*)?"
+            r"(?=(?:\$@?|@\$|@)?\"" + _SQL_STATEMENT + r"|[Ss]tring\.Format\s*\(\s*@?\"" + _SQL_STATEMENT + r")"
+            r"(?:(?:\$@?|@\$)" + _sql_brace_hole()
+            + r"|@?" + _sql_concat(r"\+", "+")
+            + r"|[Ss]tring\.Format\s*\(\s*@?" + _sql_brace_hole(r"\{\d") + r")"
+        ),
+        languages=("csharp",),
+        exclude_globs=_MIGRATIONS,
+        message="値を SQL の文字列に直接埋め込むと SQL インジェクションになります。",
+        remediation="EF Core は FromSql・ExecuteSql（補間した値をパラメータにする）、ADO.NET は Parameters、"
+        "Dapper は匿名型の引数で渡してください。",
+        cwe="CWE-89",
+        owasp="A03:2021",
+        test_severity=Severity.LOW,
+    ),
+    LineRule(
+        id="INJ-024",
+        title=".NET の BinaryFormatter などでのデシリアライズ",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            r"\bnew\s+(?:(?:Binary|Soap|Los|ObjectState)Formatter|NetDataContractSerializer)\b"
+            r"|\b(?:(?:Binary|Soap|Los|ObjectState)Formatter|NetDataContractSerializer)\s+\w+\s*=\s*new\s*\("
+        ),
+        languages=("csharp",),
+        message="データの中に書かれた型を作るので、信頼できないデータを読むと任意のコードを実行されます。"
+        "Microsoft も、安全に使う方法は無いとしています。",
+        remediation="System.Text.Json などに置き換えてください（BinaryFormatter は .NET 9 で使えなくなりました）。",
+        cwe="CWE-502",
+    ),
+    LineRule(
+        id="INJ-025",
+        title="Json.NET の TypeNameHandling を None 以外にしています",
+        severity=Severity.MEDIUM,
+        category="injection",
+        # 一覧の中身にだけ効く ItemTypeNameHandling も同じ
+        pattern=r"\b(?:Item)?TypeNameHandling\s*=\s*TypeNameHandling\.(?:All|Auto|Objects|Arrays)\b",
+        languages=("csharp",),
+        message="JSON の $type に書かれた型を作るので、外から受け取った JSON を読むと任意のコードを実行されます。",
+        remediation="TypeNameHandling.None に戻してください。要るなら、許す型だけを ISerializationBinder で決めてください。",
+        cwe="CWE-502",
+    ),
+    LineRule(
+        id="TLS-012",
+        title="C# で証明書の検証を無効化（常に true を返すコールバック）",
+        severity=Severity.HIGH,
+        category="tls",
+        pattern=(
+            r"\b(?:ServerCertificate(?:Custom)?ValidationCallback|RemoteCertificateValidationCallback)\s*(?:\+?=|\()\s*"
+            r"(?:(?:\([^()\n]*\)|\w+)\s*=>\s*(?:true\b|\{\s*return\s+true\s*;)|delegate\s*(?:\([^()\n]*\))?\s*\{\s*return\s+true\s*;)"
+            r"|\bDangerousAcceptAnyServerCertificateValidator\b"
+        ),
+        languages=("csharp",),
+        # ラムダの本体を次の行の { から書く（C# のふつうの書き方）
+        multiline=True,
+        message="どんな証明書も通すので、途中で通信を読まれたり書き換えられたりします。",
+        remediation="コールバックを消してください。社内の CA なら、その CA を信頼する設定にしてください。",
+        cwe="CWE-295",
+    ),
+    # --------------------------------------------------------------------- rust
+    LineRule(
+        id="INJ-022",
+        title="Rust で SQL に値を format! で埋め込んでいます",
+        severity=Severity.HIGH,
+        category="injection",
+        pattern=(
+            r"\b(?:query|query_as|query_scalar|query_with|query_as_with|sql_query|execute|prepare|prepare_cached"
+            r"|query_row|query_map|query_one|query_opt|batch_execute|simple_query)"
+            r"\s*(?:::" + _GENERIC_ARGS + r")?\s*\(\s*&?\s*format!\s*\(\s*(?=\"" + _SQL_STATEMENT + r")" + _sql_brace_hole()
+        ),
+        languages=("rust",),
+        exclude_globs=_MIGRATIONS,
+        message="値を SQL の文字列に直接埋め込むと SQL インジェクションになります。",
+        remediation="$1・? のプレースホルダと bind（sqlx）・params（rusqlite）で渡すか、sqlx の query! マクロを使ってください。",
+        cwe="CWE-89",
+        owasp="A03:2021",
+        test_severity=Severity.LOW,
+    ),
+    LineRule(
+        id="TLS-013",
+        title="Rust で証明書の検証を無効化（danger_accept_invalid_certs）",
+        severity=Severity.HIGH,
+        category="tls",
+        pattern=r"\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)",
+        languages=("rust",),
+        message="どんな証明書・ホスト名も通すので、途中で通信を読まれたり書き換えられたりします。",
+        remediation="外してください。自己署名の証明書なら add_root_certificate でその証明書だけを信頼してください。",
+        cwe="CWE-295",
+    ),
+    # ------------------------------------------------------------ compose・k8s・nginx
+    LineRule(
+        id="CFG-020",
+        title="コンテナに Docker のソケット（docker.sock）を渡しています",
+        severity=Severity.MEDIUM,
+        category="config",
+        # compose の volumes（- /var/run/docker.sock:…・長い書き方の source:）と、Kubernetes の hostPath の下の path:。
+        # DOCKER_HOST=unix:///var/run/docker.sock のような、つなぐ先の指定と、Ansible の path: は対象外
+        pattern=r"(?m)^[ \t]*-[ \t]*[\"']?[^\s\"'=]*?(?:/var)?/run/docker\.sock\b"
+        r"|\bsource[ \t]*:[ \t]*[\"']?(?:/var)?/run/docker\.sock\b"
+        r"|\bhostPath[ \t]*:[ \t]*\{?\s*(?:type[ \t]*:[^\n,}]*[\n,]\s*)?path[ \t]*:[ \t]*[\"']?(?:/var)?/run/docker\.sock\b",
+        languages=("yaml",),
+        multiline=True,
+        message="コンテナの中から Docker を操作でき、ホストの root と同じことができます（:ro を付けても同じです）。",
+        remediation="本当に要るコンテナだけに限り、docker-socket-proxy などで使える API を絞ってください。",
+        cwe="CWE-250",
+    ),
+    LineRule(
+        id="CFG-021",
+        title="コンテナがホストのネットワーク・プロセスを共有",
+        severity=Severity.MEDIUM,
+        category="config",
+        pattern=r"^\s*(?:host(?:Network|PID|IPC)\s*:\s*true\b|(?:network_mode|pid|ipc)\s*:\s*[\"']?host[\"']?\s*(?:#.*)?$)",
+        languages=("yaml",),
+        message="コンテナの中から、ホストの localhost だけで待ち受けるサービスや、ほかのプロセスに触れられます。",
+        remediation="外して、要るポートだけを ports で公開してください（Kubernetes の Pod Security Standards は baseline でも禁止）。",
+        cwe="CWE-250",
+    ),
+    LineRule(
+        id="CFG-022",
+        title="nginx の alias で 1 つ上のフォルダが読める（location の末尾の / の漏れ）",
+        severity=Severity.MEDIUM,
+        category="config",
+        # location が / で終わらず、alias が / で終わるもの（/static../ が /srv/app/static/../ になる）。
+        # 正規表現の location（~）と完全一致（=）は対象外。location の中のコメントの行（500 文字まで。区切らないと、
+        # 改行の無い長い行で location ごとに行末まで読む）は読み飛ばし、if (…) { … } のような 1 段の入れ子の後ろの alias も見る
+        pattern=r"\blocation\s+(?:\^~\s+)?/[^\s{;]*[^/\s{;]\s*\{(?:[^{}#]|#[^\n]{0,500}\n|\{[^{}]*\})*?"
+        r"\balias\s+[\"']?[^\s;\"']*/[\"']?\s*;",
+        path_globs=("*.conf", "*.conf.template", "*.conf.j2", "nginx.conf*", "*sites-available/*", "*sites-enabled/*"),
+        multiline=True,
+        message="/static../ のような URL で、alias のフォルダの 1 つ上のファイル（設定・ソース・.env など）を読まれます。",
+        remediation="location と alias の末尾の / をそろえてください（location /static/ { alias /srv/app/static/; }）。",
+        cwe="CWE-22",
     ),
     # -------------------------------------------------------------------- shell
     LineRule(

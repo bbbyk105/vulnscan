@@ -43,6 +43,28 @@ For concatenation it checks every string in `"…" + expression + "…"`, and st
 
 **Not reported**: building column lists, `WHERE` clauses or `IN (?, ?)` while binding the values (the same rule as Go's INJ-014). Column names, table names and sort order taken from input (`SET ${field}=?`, `ORDER BY ${sort}`) and values in positions without quotes or operators (`LIMIT ${n}`) are not reported either; read them in review. Findings in test files are low.
 
+## INJ-018 to INJ-022: SQL built in Ruby, PHP, Java/Kotlin, C# and Rust
+
+Like INJ-009, **these only report where a value is joined**: inside SQL `'…'`, and right after `=`, `<`, `>`, `LIKE`, `ILIKE`, `GLOB` or `REGEXP`. For concatenation they check every string in `"…" + expression + "…"`, and stop at an expression that contains quotes.
+
+**Not reported**:
+
+- Joined column and table names (`"#{table}.id"`, `"FROM " + table`). Right after a comparison, a value followed by `.column` (`= #{table_name}.id`, `= {$wpdb->postmeta}.post_id`) is treated as a qualified column name
+- Values in positions without quotes or operators (`IN (#{ids})`, `LIMIT #{n}`) and column names on the right of `SET` (`#{col} = #{col} + 1`); read them in review
+- Migrations (folders named `db/migrate/`, `db/post_migrate/`, `database/migrations/`, `db/migration/` or `Migrations/`; a folder such as `DataMigrations/` is checked)
+
+Findings in test files are low.
+
+| Rule | Calls | How the value is joined |
+|---|---|---|
+| INJ-018 (Ruby) | `where`, `having`, `find_by`, `find_by_sql`, `joins`, `update_all` (a bare `where(…)` too), `execute`, `exec_query`, `select_all` and others when called on a receiver (Capistrano's and Chef's `execute "…"` are not checked), `where.not` | `#{}`, `+`. Conditions written as an array, `where(["…"])`, are checked too. Constants such as `#{WORK_MEM}` and values converted to integers as a whole (`#{params[:id].to_i}`) are not reported. `connection.quote` and `sanitize_sql([…])` with an array, which add quotes, are not reported right after a comparison; `quote_string`, which does not, only inside SQL `'…'`. `sanitize_sql_like` (only `%` and `_`) and `sanitize_sql` given a string are reported |
+| INJ-019 (PHP) | `whereRaw`, `selectRaw`, `orderByRaw` and others, `DB::select`, `DB::statement` and others, `$wpdb->query`, `get_results` and others (`$this->wpdb->` too), `mysqli_query`, `pg_query`. PDO's `->query`, `exec` and `prepare` only when the string starts with an SQL verb | `"…$x"`, `"…{$x}"`, `.`. Values passed through `(int)`, `intval` or `absint` are not reported. `$pdo->quote` and `$this->db->escape`, which add quotes, are not reported right after a comparison; `esc_sql` and `mysqli_real_escape_string` only inside SQL `'…'` |
+| INJ-020 (Java/Kotlin/Scala) | `executeQuery`, `execute`, `prepareStatement`, `createQuery`, `createNativeQuery`, `rawQuery`, `execSQL`, and JdbcTemplate's `query`, `update` and others. The where clause of Android's SQLiteDatabase `update`, `delete` and `query` (`db.delete("users", "id = " + id, null)`) when the receiver's name ends with db or database (`db`, `mDb`, `database`, `writableDatabase`, `getWritableDatabase()`) | `+`, Kotlin `$x` and `${x}`, Scala `s"…$x"` |
+| INJ-021 (C#) | EF Core's `FromSqlRaw`, `ExecuteSqlRaw` and `SqlQueryRaw`, Dapper's `Query`, `Execute` and others (with type arguments such as `<User>` or `<(int, string)>`, and the named argument `sql:`), commands such as `new SqlCommand(…)`, `CommandText =` (in object initializers too) | `$"…{x}"`, `+`, `string.Format` |
+| INJ-022 (Rust) | sqlx's `query` and `query_as` (`::<_, (i64,)>` too), diesel's `sql_query`, and `execute`, `query` and others in rusqlite and tokio-postgres | `format!` |
+
+INJ-020 to INJ-022 only report strings that start an SQL statement (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `WITH`, JPQL's `FROM` and so on), except for Android where clauses. Only SQL written in place is checked. SQL stored in a variable first (`String sql = "…" + name;` followed by `executeQuery(sql)`), Kotlin and C# `"""…"""` strings and Rust `r#"…"#` strings are not.
+
 ## Shell scripts
 
 These rules read `.sh`, `.bash`, `.zsh` and `.fish` files, one line at a time. They do not read scripts without an extension (even with a `#!/bin/sh` line), `RUN` lines in a Dockerfile or `run:` blocks in GitHub Actions. A command continued on the next line with `\` is not joined (CFG-018 does join an `if` condition), and fish's `\'` inside single quotes is not handled.

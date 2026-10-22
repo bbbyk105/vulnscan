@@ -137,11 +137,12 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
 - **ログイン**: `before_action :authenticate_user!`（Devise）や、Rails 8 の認証の generator が入れる `Authentication`（`require_authentication`）が `ApplicationController` に掛かっているか。
   外している所（`skip_before_action`・`allow_unauthenticated_access`）が、本当に誰でも見てよい action だけか
 - **他人のデータ**: `Post.find(params[:id])` ではなく、`current_user.posts.find(...)` のように持ち主から探しているか。Pundit・CanCanCan を使うなら、各 action で `authorize` しているか（Pundit の `verify_authorized` で付け忘れを止められる）
-- **Strong Parameters**: `params.permit!`（全部の項目を許す）や、`permit` に role・admin・company_id などを入れていないか（Rails 8 では `params.expect` が勧められている）
-- **SQL**: `where("name = '#{params[:q]}'")`・`find_by_sql`・`order(params[:sort])` のように、外の値を SQL の文字列に入れていないか（`where(name: …)` か `?` のプレースホルダ。並べ替えは許す列を決めて選ぶ。`order` に入れてよいのは列名だけ）
+- **Strong Parameters**: `params.permit!`（全部の項目を許す。vulnscan の AUTH-009 が拾う）や、`permit` に role・admin・company_id などを入れていないか（Rails 8 では `params.expect` が勧められている）
+- **SQL**: `where("name = '#{params[:q]}'")`・`find_by_sql`・`order(params[:sort])` のように、外の値を SQL の文字列に入れていないか（`where(name: …)` か `?` のプレースホルダ。並べ替えは許す列を決めて選ぶ。`order` に入れてよいのは列名だけ）。
+  vulnscan の INJ-018 が拾うのは、`where`・`find_by_sql` などの文字列の値の位置（`'…'` の中・`=` の直後）に `#{}` や `+` でつないだものだけ
 - **XSS**: `html_safe`・`raw`・`<%== %>` にユーザーの入力、`render inline:`、`link_to` の href にユーザーの URL（`javascript:`）
 - **CSRF**: `ActionController::Base` は既定で有効。`skip_forgery_protection`・`skip_before_action :verify_authenticity_token`・`protect_from_forgery with: :null_session` の所が、Cookie のセッションを使わない入口だけか
-  （vulnscan の AUTH-005 はこれらを拾わない）
+  （vulnscan の AUTH-005 は `skip_forgery_protection`・`skip_before_action :verify_authenticity_token`・`allow_forgery_protection = false` を拾う。`null_session` は拾わない）
 - **リダイレクト**: `redirect_to params[:return_to]`。外のホストへの redirect は、Rails 7.0 からの既定の設定では例外になるが、`allow_other_host: true` を付けると通る
 - **設定**: 本番の `config.force_ssl`（Rails 8.1 の既定の Kamal の構成ではコメントアウトされている。前段で HTTPS にしているか確かめる）、`config/master.key`・`secret_key_base` を git に入れていないか
 - **その他**: `constantize`・`send`・`public_send` にユーザーの入力、`send_file` のパス、`Marshal.load`（vulnscan の INJ-013 が拾う）
@@ -151,10 +152,10 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
 - **ログイン**: 守る道が `auth`（API なら `auth:sanctum` など）の middleware のグループの中にあるか。グループの外に置いた道が無いか
 - **認可**: policy か Gate（`Gate::authorize`・`$user->can()`・`can:` middleware）で、そのモデルの持ち主かを確かめているか。
   Laravel 11 からは基底の `Controller` に `$this->authorize()` が無い（`AuthorizesRequests` を自分で入れていなければ使えない）
-- **一括代入**: `$guarded = []`・`Model::unguard()` のモデルや、`$fillable` に user_id・role・is_admin などを入れたモデルに、`$request->all()` を `create`・`update`・`fill` で渡していないか（`$request->validated()` か `only()` を渡す）
-- **SQL**: `DB::raw`・`whereRaw`・`selectRaw`・`orderByRaw`・`DB::statement` に入力をつないでいないか（2 つ目の引数のバインドを使う）。
+- **一括代入**: `$guarded = []`・`Model::unguard()` のモデルや、`$fillable` に user_id・role・is_admin などを入れたモデルに、`$request->all()` を `create`・`update`・`fill` で渡していないか（`$request->validated()` か `only()` を渡す。`$guarded = []`・`Model::unguard()` は vulnscan の AUTH-010 が拾う）
+- **SQL**: `DB::raw`・`whereRaw`・`selectRaw`・`orderByRaw`・`DB::statement` に入力をつないでいないか（2 つ目の引数のバインドを使う。vulnscan の INJ-019 は、値の位置に `$x` や `.` でつないだものだけを拾う）。
   `orderBy($request->input('sort'))` のように列名を入力から取っていないか（列名はバインドできない。公式も、入力で列名を決めさせないよう書いている）
-- **XSS**: Blade の `{!! !!}`（`{{ }}` はエスケープする）
+- **XSS**: Blade の `{!! !!}`（`{{ }}` はエスケープする。vulnscan の XSS-007 が拾う）
 - **CSRF**: 除外（Laravel 11 からは `bootstrap/app.php` の `validateCsrfTokens(except: [...])`、それより前は `VerifyCsrfToken` の `$except`）に、Webhook 以外の、Cookie のセッションで使う道を入れていないか
 - **設定**: 本番の `APP_DEBUG=false`（`.env.example` の既定は true。true だとエラーの画面に設定の値が出る）、`APP_KEY` を git に入れていないか
 - **ファイル**: `public` のディスクに置いたものは誰でも読める。アップロードの `mimes`・`max` の検証、`getClientOriginalName()` をそのまま保存のパスに使っていないか
@@ -164,7 +165,7 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
 
 - **nonce と権限の両方**: 管理画面のフォーム・`admin-ajax.php`・`admin-post.php`・REST の処理で、`check_admin_referer`・`check_ajax_referer`・`wp_verify_nonce`（CSRF）と `current_user_can`（権限）の両方を確かめているか。nonce は権限の確認の代わりにならない
 - **ログインしていない人の入口**: `wp_ajax_nopriv_*` のフックと、REST の `permission_callback`（`__return_true`）の所が、本当に誰でも呼んでよい処理だけか
-- **SQL**: `$wpdb->query`・`get_results`・`get_var`・`get_row` に変数をつないでいないか（`$wpdb->prepare` を使う）
+- **SQL**: `$wpdb->query`・`get_results`・`get_var`・`get_row` に変数をつないでいないか（`$wpdb->prepare` を使う。vulnscan の INJ-019 は値の位置につないだものだけを拾う）
 - **XSS**: 出すときに `esc_html`・`esc_attr`・`esc_url`・`wp_kses` を通しているか。`echo $_GET[...]`
 - **書き込み**: `$_POST` をそのまま `update_option`・`update_user_meta` に渡していないか（キーまで選べると、role などの設定まで書ける）
 - **ファイル**: アップロードの種類を確かめているか（`wp_check_filetype_and_ext`）。`include`・`require` にユーザーの入力
@@ -176,9 +177,9 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
   starter-security を入れただけの既定は全部の道でログインが要るが、`SecurityFilterChain` を書くと、書いたとおりになる
 - **メソッドの認可**: `@PreAuthorize` は `@EnableMethodSecurity` が無いと効かない。`@Secured` はさらに `@EnableMethodSecurity(securedEnabled = true)` が要る
 - **他人のデータ**: `repository.findById(id)` だけで返していないか（持ち主・テナントの条件）
-- **CSRF**: `csrf(csrf -> csrf.disable())` が、ブラウザから Cookie のセッションで呼ぶアプリで無効になっていないか（公式が無効にしてよいとするのは、ブラウザから呼ばれないバックエンドだけ。vulnscan の AUTH-005 はこの書き方を拾わない）
+- **CSRF**: `csrf(csrf -> csrf.disable())` が、ブラウザから Cookie のセッションで呼ぶアプリで無効になっていないか（公式が無効にしてよいとするのは、ブラウザから呼ばれないバックエンドだけ。vulnscan の AUTH-005 が拾う）
 - **CORS**: `@CrossOrigin` を引数なしで付けると、全部の送り元を許す。Cookie を使う API では送り元を絞る
-- **Actuator**: `management.endpoints.web.exposure.include=*` で `env`・`heapdump`・`configprops`・`loggers` などを HTTP に出していないか（Boot 3 の既定は `health` だけ）。
+- **Actuator**: `management.endpoints.web.exposure.include=*`（vulnscan の CFG-019 が拾う）で `env`・`heapdump`・`configprops`・`loggers` などを HTTP に出していないか（Boot 3 の既定は `health` だけ）。
   出すなら、その道にログインとロールが要るか（`/actuator/**` を `permitAll()` にしていないか）。`heapdump` にはメモリの中の秘密やセッションが入る
 - **SQL**: `@Query(nativeQuery = true)`・`createQuery`・`createNativeQuery`・`JdbcTemplate` に文字列をつないでいないか（`:name`・`?` のパラメータ）
 - **一括代入**: エンティティをそのまま `@RequestBody` で受けて保存していないか（role などの列まで書ける。受け取り用の DTO を分ける）
@@ -195,7 +196,7 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
 - **一括代入（overposting）**: エンティティをそのまま `[FromBody]` で受けて保存していないか（DTO か `[Bind]`）
 - **CSRF**: Cookie で認証する MVC・Razor Pages で `[ValidateAntiForgeryToken]` か `AutoValidateAntiforgeryToken` があるか。Minimal API のフォームは `UseAntiforgery`（`DisableAntiforgery()` の所を見る）
 - **CORS**: `SetIsOriginAllowed(_ => true)` と `AllowCredentials()` の組み合わせ（全部の送り元に Cookie つきで許す）。`AllowAnyOrigin()` と `AllowCredentials()` は、ASP.NET Core が無効な応答を返す
-- **デシリアライズ**: `BinaryFormatter`（.NET 9 からは常に例外）、Newtonsoft.Json の `TypeNameHandling` を `None` 以外にして外の JSON を読む
+- **デシリアライズ**: `BinaryFormatter`（.NET 9 からは常に例外）、Newtonsoft.Json の `TypeNameHandling` を `None` 以外にして外の JSON を読む（vulnscan の INJ-024・INJ-025 が拾う）
 - **XSS**: Razor の `@Html.Raw(...)`・`HtmlString` にユーザーの入力
 - **設定**: 本番で `ASPNETCORE_ENVIRONMENT=Development`（開発用のエラーの画面が出る）、`appsettings.json` に接続文字列や秘密（User Secrets・環境変数・Key Vault に）
 
@@ -217,9 +218,9 @@ vulnscan が拾うのは `if true` と、テスト用の期限付きの公開（
 - **ログインの確認の掛け方**: extractor か middleware（axum の `middleware::from_fn`・tower の layer、Actix の `wrap`）で、守る道の全部に掛けているか。
   axum の `layer` は、それより前に足した道にだけ掛かる（後から `route`・`merge`・`nest` した道には掛からない）
 - **他人のデータ**: `Path(id)` で受けた id を、持ち主・テナントの条件なしに引いていないか
-- **SQL**: `sqlx::query(&format!(…))` のように、入力を埋め込んだ文字列を渡していないか（`$1`・`?` と `bind`、または `query!` マクロ）
+- **SQL**: `sqlx::query(&format!(…))` のように、入力を埋め込んだ文字列を渡していないか（`$1`・`?` と `bind`、または `query!` マクロ。vulnscan の INJ-022 は、`format!` で値の位置に埋め込んだものだけを拾う）
 - **CORS**: tower-http の `CorsLayer::permissive()`（全部の送り元）・`very_permissive()`（送り元を写し返し、Cookie も許す）、actix-cors の `Cors::permissive()`（公式も本番では使わないよう書いている）
-- **TLS**: reqwest の `danger_accept_invalid_certs(true)`（証明書を確かめない）
+- **TLS**: reqwest の `danger_accept_invalid_certs(true)`（証明書を確かめない。vulnscan の TLS-013 が拾う）
 - **その他**: body の大きさの上限（axum の `DefaultBodyLimit`、Actix の `PayloadConfig`）、`Command::new("sh").arg("-c")` に入力、`unsafe`
 
 ## Phoenix
@@ -317,15 +318,15 @@ MCP の SDK をクライアントとして使っているだけなら、この�
 
 ## インフラの設定（Docker Compose・Kubernetes・Terraform・nginx）
 
-vulnscan が見るのは Dockerfile と、YAML の `privileged: true`・平文の秘密だけ。`.tf` と nginx の設定は、秘密の置き忘れのルールだけで見る。
+vulnscan が見るのは Dockerfile と、YAML の `privileged: true`・`docker.sock` の mount・ホストの名前空間の共有・平文の秘密、nginx の `alias` の末尾の `/` だけ。`.tf` は、秘密の置き忘れのルールだけで見る。
 
 - **Docker Compose**: DB・Redis などの `ports: "5432:5432"` は全部のアドレスで待ち受け、Linux では ufw などの firewall を通らない（Docker の文書も、公開したポートは firewall の設定を素通りすると書いている）。
-  外に出さないなら `127.0.0.1:5432:5432` にするか、`ports` を書かない。`/var/run/docker.sock` の mount（コンテナの中からホストの root と同じことができる）、`privileged: true`（vulnscan の CFG-008）、既定のままのパスワード
+  外に出さないなら `127.0.0.1:5432:5432` にするか、`ports` を書かない。`/var/run/docker.sock` の mount（コンテナの中からホストの root と同じことができる。vulnscan の CFG-020）、`privileged: true`（vulnscan の CFG-008）、既定のままのパスワード
 - **Kubernetes**: `securityContext`（`runAsNonRoot: true`・`allowPrivilegeEscalation: false`・`capabilities.drop: ["ALL"]`・`seccompProfile.type: RuntimeDefault`。Pod Security Standards の restricted）。
-  `hostNetwork`・`hostPID`・`hostPath`（baseline でも禁止）。`Secret` の manifest を git に入れていないか（base64 は暗号ではない）。`ClusterRole` の `*` や `cluster-admin` の割り当て
+  `hostNetwork`・`hostPID`・`hostPath`（baseline でも禁止。vulnscan の CFG-021 は `hostNetwork`・`hostPID`・`hostIPC` の `true` と、compose の `network_mode: host`・`pid: host`・`ipc: host` を拾う）。`Secret` の manifest を git に入れていないか（base64 は暗号ではない）。`ClusterRole` の `*` や `cluster-admin` の割り当て
 - **Terraform**: `terraform.tfstate`・`*.tfvars` を git に入れていないか（state には秘密が平文で入る。暗号化できる remote backend に置く）。
   セキュリティグループで `0.0.0.0/0` に 22・3389・DB のポートを開けていないか、公開の S3 バケット、`publicly_accessible = true` の DB、暗号化の無いストレージ、IAM の `*`
-- **nginx**: `location /static { alias /srv/static/; }` のように、`location` の末尾に `/` が無く `alias` の末尾にあると、`/static../` で 1 つ上のフォルダを読める（`location /static/` にそろえる）。
+- **nginx**: `location /static { alias /srv/static/; }` のように、`location` の末尾に `/` が無く `alias` の末尾にあると、`/static../` で 1 つ上のフォルダを読める（`location /static/` にそろえる。vulnscan の CFG-022 が拾う）。
   `autoindex on`、`root` にリポジトリ全体を置いて `.git`・`.env` を返していないか、`proxy_pass` の先の内部の管理画面を外に出していないか
 
 ## Flutter / Dart（vulnscan のルールは、証明書の検証・平文の通信・SharedPreferences・print・WebView と、Android / iOS の設定）
@@ -351,19 +352,19 @@ vulnscan が見るのは Dockerfile と、YAML の `privileged: true`・平文�
 - **HTTP サーバー**: `ReadHeaderTimeout` などのタイムアウトがあるか
 - **乱数**: トークンに `math/rand` を使っていないか（`crypto/rand`）
 
-## Java / Kotlin（Android を含む。vulnscan のルールは Runtime.exec だけ）
+## Java / Kotlin（Android を含む。vulnscan のルールは、Runtime.exec・SQL の連結・ObjectInputStream と XMLDecoder）
 
-- **SQL**: 文字列をつないだクエリ（`rawQuery`・`createQuery`・`execSQL`）
+- **SQL**: 文字列をつないだクエリ（`rawQuery`・`createQuery`・`execSQL`、SQLiteDatabase の where 句）。vulnscan の INJ-020 は、呼び出しの中で値の位置につないだものだけを拾う。先に変数に入れた SQL と、Kotlin の `"""…"""` はここで読む
 - **Android**: `exported` のコンポーネント、WebView の `setJavaScriptEnabled` と `addJavascriptInterface`、外部ストレージへの保存、ログの秘密
-- **デシリアライズ**: `ObjectInputStream` で外のデータを読んでいないか
+- **デシリアライズ**: `ObjectInputStream` で外のデータを読んでいないか（vulnscan の INJ-023 は作っている所を拾うので、何を読んでいるかを確かめる）
 - **XML**: 外部実体（XXE）を無効にしているか
 
-## C#（ASP.NET Core 以外も。vulnscan に言語のルールなし）
+## C#（ASP.NET Core 以外も。vulnscan のルールは、SQL の組み立て・BinaryFormatter など・TypeNameHandling・証明書の検証の無効化）
 
-- **SQL**: `SqlCommand`・`FromSqlRaw`・Dapper の `Query` に、文字列をつないだ SQL を渡していないか（パラメータを使う）
+- **SQL**: `SqlCommand`・`FromSqlRaw`・Dapper の `Query` に、文字列をつないだ SQL を渡していないか（パラメータを使う）。vulnscan の INJ-021 は、呼び出しの中で値の位置に埋め込んだものだけを拾う
 - **コマンド**: `Process.Start` に `cmd.exe /c`・`/bin/sh -c` と入力を渡していないか
-- **TLS**: `ServerCertificateCustomValidationCallback` で常に true を返す、`HttpClientHandler.DangerousAcceptAnyServerCertificateValidator`
-- **デシリアライズ**: `BinaryFormatter`・`NetDataContractSerializer`、Newtonsoft.Json の `TypeNameHandling`
+- **TLS**: `ServerCertificateCustomValidationCallback` で常に true を返す、`HttpClientHandler.DangerousAcceptAnyServerCertificateValidator`（vulnscan の TLS-012 が拾う）
+- **デシリアライズ**: `BinaryFormatter`・`NetDataContractSerializer`（vulnscan の INJ-024）、Newtonsoft.Json の `TypeNameHandling`（INJ-025）
 - **乱数**: トークンに `System.Random` を使っていないか（`RandomNumberGenerator` を使う）
 - **パス**: `Path.Combine` にユーザーの入力（2 つ目の引数が絶対パスだと、前の部分が捨てられる）
 
@@ -381,9 +382,13 @@ vulnscan が見るのは Dockerfile と、YAML の `privileged: true`・平文�
 - 秘密をコマンドの引数に入れていないか（プロセスの一覧や履歴に残る）
 - 決まった名前の `/tmp` のファイル（ほかのユーザーが先に作れる。`mktemp` を使う）
 
-## Rust・C / C++ など
+## Rust（vulnscan のルールは、format! で組み立てた SQL・証明書の検証の無効化）
+
+- `unsafe` ブロック、シェル経由のコマンドへの入力
+- メモリの扱いと `unsafe` の正しさは vulnscan の守備範囲の外なので、clippy などを勧める（依存の既知の脆弱性は `--deps` か cargo audit で見る）
+
+## C / C++ など
 
 - 自動で作られたもの（モバイルの Bridging Header など）だけなら、そう書いて済ませてよい
-- C / C++: バッファの長さ、`strcpy`・`sprintf`・`gets`、整数のあふれ
-- Rust: `unsafe` ブロック、シェル経由のコマンドへの入力
-- vulnscan の守備範囲の外なので、専用のツール（Rust なら cargo audit と clippy、C / C++ なら cppcheck など）を勧める
+- バッファの長さ、`strcpy`・`sprintf`・`gets`、整数のあふれ
+- vulnscan の守備範囲の外なので、専用のツール（cppcheck など）を勧める
